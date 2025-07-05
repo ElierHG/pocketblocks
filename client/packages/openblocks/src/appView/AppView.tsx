@@ -1,12 +1,14 @@
 import { RootComp } from "comps/comps/rootComp";
 import { GetContainerParams, useCompInstance } from "comps/utils/useCompInstance";
 import { createBrowserHistory } from "history";
-import { CompActionTypes, deferAction } from "openblocks-core";
+import { CompActionTypes, deferAction, changeChildAction } from "openblocks-core";
 import { HTMLAttributes, useEffect, useMemo, useRef } from "react";
 import { Provider } from "react-redux";
 import { Route, Router } from "react-router";
 import { reduxStore } from "redux/store/store";
 import { ExternalEditorContext } from "util/context/ExternalEditorContext";
+import { Helmet } from "react-helmet";
+import React from "react";
 
 const browserHistory = createBrowserHistory();
 
@@ -17,90 +19,82 @@ export interface OpenblocksAppBootStrapOptions {
   baseUrl?: string;
 }
 
-export interface OpenblocksAppViewProps
-  extends HTMLAttributes<HTMLDivElement>,
-    OpenblocksAppBootStrapOptions {
-  appId: string;
+interface AppViewProps extends HTMLAttributes<HTMLDivElement> {
+  appDsl?: any;
+  moduleDSL?: any;
+  moduleInputs?: any;
+  baseUrl?: string;
+  webUrl?: string;
 }
 
-interface AppViewProps {
-  dsl: any;
-  appId: string;
-  moduleDsl: any;
-  moduleInputs?: Record<string | number, { name: string; value: any }>;
-  onModuleEventTriggered?: (eventName: string) => void;
-  onCompChange?: (comp: RootComp | null) => void;
-}
-
+/**
+ * root component of application view
+ */
 export function AppView(props: AppViewProps) {
-  const { dsl, moduleDsl, appId, moduleInputs, onCompChange, onModuleEventTriggered } = props;
-
-  const onModuleEventTriggeredRef = useRef(onModuleEventTriggered);
-  onModuleEventTriggeredRef.current = onModuleEventTriggered;
-
-  const params = useMemo<GetContainerParams<typeof RootComp>>(
-    () => ({
+  const { appDsl, moduleDSL, moduleInputs, baseUrl, webUrl, ...divProps } = props;
+  const params = useMemo<GetContainerParams<RootComp>>(() => {
+    return {
       Comp: RootComp,
-      initialValue: dsl,
+      initialValue: appDsl,
       reduceContext: {
         readOnly: true,
-        applicationId: appId,
+        moduleDSL: moduleDSL || {},
+        applicationId: appDsl?.applicationId,
         parentApplicationPath: [],
-        moduleDSL: moduleDsl || {},
       },
-      initHandler: (comp: any) => comp.preload(`app-${appId}`),
-      actionPreInterceptor: (action) => {
-        if (action.type === CompActionTypes.TRIGGER_MODULE_EVENT) {
-          onModuleEventTriggeredRef.current?.(action.name);
-          return false;
-        }
-        return true;
-      },
-    }),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [appId]
-  );
-
-  const [comp] = useCompInstance(params);
+    };
+  }, [appDsl, moduleDSL]);
+  const [comp, container] = useCompInstance(params);
+  const appId = appDsl?.applicationId;
 
   useEffect(() => {
-    onCompChange?.(comp);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [comp]);
-
-  useEffect(() => {
-    const moduleLayoutComp = comp?.children.ui.getModuleLayoutComp();
-    if (!moduleLayoutComp || !moduleInputs) {
-      return;
+    if (container && moduleInputs) {
+      // @ts-ignore
+      container.dispatch(
+        changeChildAction('ui', 'comp', 'io', 'inputs', (inputs: any[]) => {
+          const next = [...inputs];
+          Object.keys(moduleInputs).forEach((key) => {
+            // make user input comp disabled by default
+            if (moduleInputs[key]?.disabled === undefined) {
+              moduleInputs[key].disabled = true;
+            }
+            const idx = next.findIndex((i) => i.name === key);
+            if (idx !== -1) {
+              next[idx].defaultValue.comp = moduleInputs[key];
+            }
+          });
+          return next;
+        }),
+      );
     }
-    const inputs = moduleLayoutComp.children.io.children.inputs.getView();
-
-    inputs.forEach((input) => {
-      const { name } = input.getView();
-      const nextValue = moduleInputs[name];
-      if (nextValue !== undefined) {
-        input.children.defaultValue.children.comp.dispatch(
-          deferAction(input.children.defaultValue.children.comp.changeValueAction(nextValue as any))
-        );
-      }
-    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [moduleInputs]);
 
+  // Get favicon from app settings if available
+  const appSettingsFavicon = comp?.children.settings.children.favicon.getView();
+  const faviconUrl = appSettingsFavicon || null;
+
   return (
-    <Provider store={reduxStore}>
-      <ExternalEditorContext.Provider
-        value={{
-          applicationId: appId,
-          appType: 1,
-          readOnly: true,
-          hideHeader: true,
-        }}
-      >
-        <Router history={browserHistory}>
-          <Route path="/" render={() => comp?.getView()} />
-        </Router>
-      </ExternalEditorContext.Provider>
-    </Provider>
+    <div {...divProps}>
+      {faviconUrl && (
+        <Helmet>
+          <link rel="icon" href={faviconUrl} />
+        </Helmet>
+      )}
+      <Provider store={reduxStore}>
+        <ExternalEditorContext.Provider
+          value={{
+            applicationId: appId,
+            appType: 1,
+            readOnly: true,
+            hideHeader: true,
+          }}
+        >
+          <Router history={browserHistory}>
+            <Route path="/" render={() => comp?.getView()} />
+          </Router>
+        </ExternalEditorContext.Provider>
+      </Provider>
+    </div>
   );
 }

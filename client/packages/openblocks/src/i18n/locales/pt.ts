@@ -1828,6 +1828,9 @@ export const pt = {
     themeSetting: "Configuração do tema",
     themeSettingDefault: "Padrão",
     themeCreate: "Criar tema",
+    favicon: "Favicon do aplicativo",
+    faviconPlaceholder: "https://exemplo.com/favicon.ico",
+    faviconInvalid: "Por favor, insira um URL válido",
   },
   customShortcut: {
     title: "Atalhos personalizados",

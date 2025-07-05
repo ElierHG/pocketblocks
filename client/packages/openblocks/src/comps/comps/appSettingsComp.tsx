@@ -17,6 +17,8 @@ import { Divider } from "antd";
 import { THEME_SETTING } from "constants/routesURL";
 import { CustomShortcutsComp } from "./customShortcutsComp";
 import { DEFAULT_THEMEID } from "comps/utils/themeUtil";
+import { StringControl } from "comps/controls/codeControl";
+import { URL_PATTERN } from "util/stringUtils";
 
 const TITLE = trans("appSetting.title");
 const USER_DEFINE = "__USER_DEFINE";
@@ -141,6 +143,7 @@ const childrenMap = {
   maxWidth: dropdownInputSimpleControl(OPTIONS, USER_DEFINE, "1920"),
   themeId: valueComp<string>(DEFAULT_THEMEID),
   customShortcuts: CustomShortcutsComp,
+  favicon: StringControl,
 };
 type ChildrenInstance = RecordConstructorToComp<typeof childrenMap> & {
   themeList: ThemeType[];
@@ -148,7 +151,7 @@ type ChildrenInstance = RecordConstructorToComp<typeof childrenMap> & {
 };
 
 function AppSettingsModal(props: ChildrenInstance) {
-  const { themeList, defaultTheme, themeId, maxWidth } = props;
+  const { themeList, defaultTheme, themeId, maxWidth, favicon } = props;
   const THEME_OPTIONS = themeList?.map((theme) => ({
     label: theme.name,
     value: theme.id + "",
@@ -231,6 +234,18 @@ function AppSettingsModal(props: ChildrenInstance) {
             );
           }}
         />
+        {favicon.propertyView({
+          label: trans("appSetting.favicon"),
+          placeholder: trans("appSetting.faviconPlaceholder"),
+          labelStyle: { marginBottom: "8px" },
+          validationRules: [
+            {
+              rule: (value) => !value || URL_PATTERN.test(value),
+              message: trans("appSetting.faviconInvalid"),
+            },
+          ],
+          inputStyle: { marginBottom: "12px" },
+        })}
       </DivStyled>
       {props.customShortcuts.getPropertyView()}
     </SettingsStyled>
@@ -241,6 +256,7 @@ export const AppSettingsComp = new MultiCompBuilder(childrenMap, (props) => {
   return {
     ...props,
     maxWidth: Number(props.maxWidth),
+    favicon: props.favicon,
   };
 })
   .setPropertyViewFn((children) => {

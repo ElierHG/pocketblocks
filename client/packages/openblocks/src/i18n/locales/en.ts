@@ -1779,6 +1779,9 @@ export const en = {
     themeSetting: "Theme setting",
     themeSettingDefault: "Default",
     themeCreate: "Create theme",
+    favicon: "App favicon",
+    faviconPlaceholder: "https://example.com/favicon.ico",
+    faviconInvalid: "Please enter a valid URL",
   },
   customShortcut: {
     title: "Custom shortcuts",
