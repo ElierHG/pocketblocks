@@ -102,10 +102,35 @@ export function AppView(props: AppViewProps) {
   console.log("App Settings Favicon:", appSettingsFavicon);
   console.log("Favicon URL:", faviconUrl);
 
+  // Directly set the favicon in the document head
+  useEffect(() => {
+    if (faviconUrl) {
+      // Remove any existing favicon links
+      const existingFavicons = document.querySelectorAll("link[rel*='icon']");
+      existingFavicons.forEach(favicon => favicon.remove());
+      
+      // Create and append the new favicon link
+      const link = document.createElement('link');
+      link.rel = 'icon';
+      link.href = faviconUrl;
+      document.head.appendChild(link);
+      
+      // Also set the title to the app name if available
+      if (comp && (comp as any).children.name) {
+        const appName = (comp as any).children.name.getView();
+        if (appName) {
+          document.title = appName;
+        }
+      }
+      
+      console.log("Favicon set directly:", faviconUrl);
+    }
+  }, [faviconUrl, comp]);
+
   return (
     <div>
       {faviconUrl && (
-        <Helmet encodeSpecialCharacters={false}>
+        <Helmet>
           <link rel="icon" href={faviconUrl} />
         </Helmet>
       )}
