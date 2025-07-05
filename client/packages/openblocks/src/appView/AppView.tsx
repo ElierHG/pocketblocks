@@ -96,11 +96,16 @@ export function AppView(props: AppViewProps) {
   const appSettings = comp ? (comp as any).children.settings : undefined;
   const appSettingsFavicon = appSettings?.children?.favicon?.getView();
   const faviconUrl = appSettingsFavicon || null;
+  
+  // Debug logging
+  console.log("App Settings:", appSettings);
+  console.log("App Settings Favicon:", appSettingsFavicon);
+  console.log("Favicon URL:", faviconUrl);
 
   return (
     <div>
       {faviconUrl && (
-        <Helmet>
+        <Helmet encodeSpecialCharacters={false}>
           <link rel="icon" href={faviconUrl} />
         </Helmet>
       )}

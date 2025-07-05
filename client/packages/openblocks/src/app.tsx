@@ -105,7 +105,7 @@ class AppIndex extends React.Component<AppIndexProps, any> {
       <Wrapper headerColor={this.props.orgDev ? undefined : this.props.headerColor}>
         <Helmet>
           {<title>{this.props.brandName}</title>}
-          {<link rel="icon" href={this.props.favicon} />}
+          {!window.location.pathname.includes("/apps/") && <link rel="icon" href={this.props.favicon} />}
           <meta name="description" content={this.props.brandName} />
         </Helmet>
         <SystemWarning />
