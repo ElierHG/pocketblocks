@@ -92,8 +92,9 @@ export function AppView(props: AppViewProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [moduleInputs]);
 
-  // Get favicon from app settings if available
-  const appSettingsFavicon = comp?.children.settings.children.favicon.getView();
+  // Extract favicon from app settings
+  const appSettings = comp ? (comp as any).children.settings : undefined;
+  const appSettingsFavicon = appSettings?.children?.favicon?.getView();
   const faviconUrl = appSettingsFavicon || null;
 
   return (
@@ -113,7 +114,7 @@ export function AppView(props: AppViewProps) {
           }}
         >
           <Router history={browserHistory}>
-            <Route path="/" render={() => comp?.getView()} />
+            <Route path="*">{comp?.getView()}</Route>
           </Router>
         </ExternalEditorContext.Provider>
       </Provider>
