@@ -42,13 +42,8 @@ import { DefaultPanelStatus, getPanelStatus, savePanelStatus } from "util/localS
 import Bottom from "./bottom/BottomPanel";
 import { LeftContent } from "./LeftContent";
 import { isAggregationApp } from "util/appUtils";
-import { CompNameContext as CompNameContextImport } from "comps/editorState";
-import { AppCrash } from "pages/common/appCrash";
-import { getNextId } from "comps/utils";
 import { ThemeContext } from "comps/utils/themeContext";
 import { defaultTheme } from "comps/controls/styleControlConstants";
-import { ErrorBoundary } from "util/errorUtils";
-import { EditorModeSync } from "comps/utils/modeUtils";
 
 const HookCompContainer = styled.div`
   pointer-events: none;
@@ -277,13 +272,9 @@ function EditorView(props: EditorViewProps) {
     };
   }, []);
 
-  const [compName] = useState(() => getNextId("EditorView"));
+  const [compName] = useState("EditorView");
   const externalState = useContext(ExternalEditorContext);
   const theme = useContext(ThemeContext)?.theme || defaultTheme;
-  const { settings, comp } = useContext(CompNameContext);
-
-  // Get favicon from app settings if available
-  const appSettingsFavicon = settings?.children.favicon.getView();
 
   if (readOnly && hideHeader) {
     return (
@@ -333,104 +324,98 @@ function EditorView(props: EditorViewProps) {
   const appSettingsComp = editorState.getAppSettingsComp();
 
   return (
-    <ErrorBoundary fallbackUI={<AppCrash />}>
-      <EditorModeSync />
-      <Height100Div
-        onDragEnd={(e) => {
-          // log.debug("layout: onDragEnd. Height100Div");
-          editorState.setDragging(false);
-          draggingUtils.clearData();
-        }}
+    <Height100Div
+      onDragEnd={(e) => {
+        // log.debug("layout: onDragEnd. Height100Div");
+        editorState.setDragging(false);
+        draggingUtils.clearData();
+      }}
+    >
+      <Header togglePanel={togglePanel} panelStatus={panelStatus} />
+      <Helmet>{application && <title>{application.name}</title>}</Helmet>
+      {showNewUserGuide && <EditorTutorials />}
+      <EditorGlobalHotKeys
+        disabled={readOnly}
+        togglePanel={togglePanel}
+        panelStatus={panelStatus}
+        toggleShortcutList={toggleShortcutList}
       >
-        <Header togglePanel={togglePanel} panelStatus={panelStatus} />
-        <Helmet>
-          {application && <title>{application.name}</title>}
-          {appSettingsFavicon && <link rel="icon" href={appSettingsFavicon} />}
-        </Helmet>
-        {showNewUserGuide && <EditorTutorials />}
-        <EditorGlobalHotKeys
-          disabled={readOnly}
-          togglePanel={togglePanel}
-          panelStatus={panelStatus}
-          toggleShortcutList={toggleShortcutList}
-        >
-          <Body>
-            <SiderWrapper>
-              <Sider width={40}>
-                <Menu
-                  theme="dark"
-                  mode="inline"
-                  defaultSelectedKeys={[SiderKey.State]}
-                  selectedKeys={panelStatus.left ? [menuKey] : [""]}
-                  items={items}
-                  disabled={showAppSnapshot}
-                  onClick={(params) => clickMenu(params)}
-                />
-                {!showAppSnapshot && (
-                  <HelpDiv>
-                    <HelpDropdown
-                      showShortcutList={showShortcutList}
-                      setShowShortcutList={setShowShortcutList}
-                      isEdit={true}
-                    />
-                  </HelpDiv>
-                )}
-              </Sider>
-            </SiderWrapper>
-
-            {panelStatus.left && (
-              <LeftPanel>
-                {menuKey === SiderKey.State && <LeftContent uiComp={uiComp} />}
-                {menuKey === SiderKey.Setting && (
-                  <SettingsDiv>
-                    <ScrollBar>
-                      {application &&
-                        !isAggregationApp(AppUILayoutType[application.applicationType]) && (
-                          <>
-                            {appSettingsComp.getPropertyView()}
-                            <Divider />
-                          </>
-                        )}
-                      <TitleDiv>{trans("leftPanel.toolbarTitle")}</TitleDiv>
-                      {props.preloadComp.getPropertyView()}
-                      <PreloadDiv
-                        onClick={() =>
-                          dispatch(setEditorExternalStateAction({ showScriptsAndStyleModal: true }))
-                        }
-                      >
-                        <LeftPreloadIcon />
-                        {trans("leftPanel.toolbarPreload")}
-                      </PreloadDiv>
-                    </ScrollBar>
-
-                    {props.preloadComp.getJSLibraryPropertyView()}
-                  </SettingsDiv>
-                )}
-              </LeftPanel>
-            )}
-            <MiddlePanel>
-              <EditorWrapper className={editorContentClassName}>
-                <EditorHotKeys disabled={readOnly}>
-                  <EditorContainerWithViewMode>
-                    {uiCompView}
-                    <HookCompContainer>{hookCompViews}</HookCompContainer>
-                  </EditorContainerWithViewMode>
-                </EditorHotKeys>
-              </EditorWrapper>
-              {panelStatus.bottom && <Bottom />}
-            </MiddlePanel>
-            {showRight && (
-              <RightPanel
-                uiComp={uiComp}
-                onCompDrag={onCompDrag}
-                showPropertyPane={editorState.showPropertyPane}
-                onTabChange={setShowPropertyPane}
+        <Body>
+          <SiderWrapper>
+            <Sider width={40}>
+              <Menu
+                theme="dark"
+                mode="inline"
+                defaultSelectedKeys={[SiderKey.State]}
+                selectedKeys={panelStatus.left ? [menuKey] : [""]}
+                items={items}
+                disabled={showAppSnapshot}
+                onClick={(params) => clickMenu(params)}
               />
-            )}
-          </Body>
-        </EditorGlobalHotKeys>
-      </Height100Div>
-    </ErrorBoundary>
+              {!showAppSnapshot && (
+                <HelpDiv>
+                  <HelpDropdown
+                    showShortcutList={showShortcutList}
+                    setShowShortcutList={setShowShortcutList}
+                    isEdit={true}
+                  />
+                </HelpDiv>
+              )}
+            </Sider>
+          </SiderWrapper>
+
+          {panelStatus.left && (
+            <LeftPanel>
+              {menuKey === SiderKey.State && <LeftContent uiComp={uiComp} />}
+              {menuKey === SiderKey.Setting && (
+                <SettingsDiv>
+                  <ScrollBar>
+                    {application &&
+                      !isAggregationApp(AppUILayoutType[application.applicationType]) && (
+                        <>
+                          {appSettingsComp.getPropertyView()}
+                          <Divider />
+                        </>
+                      )}
+                    <TitleDiv>{trans("leftPanel.toolbarTitle")}</TitleDiv>
+                    {props.preloadComp.getPropertyView()}
+                    <PreloadDiv
+                      onClick={() =>
+                        dispatch(setEditorExternalStateAction({ showScriptsAndStyleModal: true }))
+                      }
+                    >
+                      <LeftPreloadIcon />
+                      {trans("leftPanel.toolbarPreload")}
+                    </PreloadDiv>
+                  </ScrollBar>
+
+                  {props.preloadComp.getJSLibraryPropertyView()}
+                </SettingsDiv>
+              )}
+            </LeftPanel>
+          )}
+          <MiddlePanel>
+            <EditorWrapper className={editorContentClassName}>
+              <EditorHotKeys disabled={readOnly}>
+                <EditorContainerWithViewMode>
+                  {uiCompView}
+                  <HookCompContainer>{hookCompViews}</HookCompContainer>
+                </EditorContainerWithViewMode>
+              </EditorHotKeys>
+            </EditorWrapper>
+            {panelStatus.bottom && <Bottom />}
+          </MiddlePanel>
+          {showRight && (
+            <RightPanel
+              uiComp={uiComp}
+              onCompDrag={onCompDrag}
+              showPropertyPane={editorState.showPropertyPane}
+              onTabChange={setShowPropertyPane}
+            />
+          )}
+        </Body>
+      </EditorGlobalHotKeys>
+    </Height100Div>
   );
 }
 

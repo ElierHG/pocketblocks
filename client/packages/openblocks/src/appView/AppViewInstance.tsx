@@ -154,11 +154,10 @@ export class AppViewInstance<I = any, O = any> {
     ReactDOM.render(
       <StyleSheetManager target={this.node as HTMLElement}>
         <AppView
-          appDsl={data.appDsl}
-          moduleDSL={data.moduleDslMap}
+          appId={this.appId}
+          dsl={data.appDsl}
+          moduleDsl={data.moduleDslMap}
           moduleInputs={this.options.moduleInputs}
-          baseUrl={this.options.baseUrl}
-          webUrl={this.options.webUrl}
           onCompChange={(comp) => this.handleCompChange(comp)}
           onModuleEventTriggered={(eventName) =>
             this.emit("moduleEventTriggered", [eventName])

@@ -236,15 +236,7 @@ function AppSettingsModal(props: ChildrenInstance) {
         />
         {favicon.propertyView({
           label: trans("appSetting.favicon"),
-          placeholder: trans("appSetting.faviconPlaceholder"),
-          labelStyle: { marginBottom: "8px" },
-          validationRules: [
-            {
-              rule: (value) => !value || URL_PATTERN.test(value),
-              message: trans("appSetting.faviconInvalid"),
-            },
-          ],
-          inputStyle: { marginBottom: "12px" },
+          placeholder: trans("appSetting.faviconPlaceholder")
         })}
       </DivStyled>
       {props.customShortcuts.getPropertyView()}
