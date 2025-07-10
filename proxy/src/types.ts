@@ -27,6 +27,12 @@ export interface Group extends BaseModel {
   users: string[];
 }
 
+export interface Connection extends BaseModel {
+  name: string;
+  type: string;
+  config: string;
+}
+
 export interface User extends BaseModel {
   username?: string;
   email?: string;
@@ -178,6 +184,12 @@ export type API = {
     remove: (id: string) => APIResponse;
     list: () => APIResponse<Folder[]>;
     update: (params: Partial<Folder> & { id: string }) => APIResponse<Folder>;
+  };
+  connections: {
+    create: (params: Partial<Connection>) => APIResponse<Connection>;
+    remove: (id: string) => APIResponse;
+    list: () => APIResponse<Connection[]>;
+    update: (params: Partial<Connection> & { id: string }) => APIResponse<Connection>;
   };
   groups: {
     list: (filters?: ListGroupsFilters) => APIResponse<Group[]>;

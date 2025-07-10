@@ -125,6 +125,18 @@ export function applyAPICache(api: API): API {
       update: invalidateCache(invalidateFolders, api.folders.update),
       remove: invalidateCache(invalidateFolders, api.folders.remove),
     },
+    connections: {
+      list: applyCache("listConnections", api.connections.list),
+      create: invalidateCache(async () => {
+        return ({ queryKey }) => queryKey[0] === "listConnections";
+      }, api.connections.create),
+      update: invalidateCache(async () => {
+        return ({ queryKey }) => queryKey[0] === "listConnections";
+      }, api.connections.update),
+      remove: invalidateCache(async () => {
+        return ({ queryKey }) => queryKey[0] === "listConnections";
+      }, api.connections.remove),
+    },
     groups: {
       list: applyCache("listGroups", api.groups.list),
     },

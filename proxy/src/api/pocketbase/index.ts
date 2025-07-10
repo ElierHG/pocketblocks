@@ -6,3 +6,4 @@ export * as sdk from "./sdk";
 export * as settings from "./settings";
 export * as snapshots from "./snapshots";
 export * as users from "./users";
+export * as connections from "./connections";

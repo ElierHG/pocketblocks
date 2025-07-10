@@ -8,6 +8,7 @@ import {
   APIResponse,
   Application,
   Folder,
+  Connection,
   Snapshot,
   Settings,
   UsersInfo,
@@ -48,11 +49,13 @@ class PocketBlocksClient {
   readonly folders: FolderService;
   readonly settings: SettingsService;
   readonly snapshots: SnapshotService;
+  readonly connections: ConnectionService;
   constructor(client: PocketBase) {
     this.applications = new ApplicationService(client);
     this.folders = new FolderService(client);
     this.settings = new SettingsService(client);
     this.snapshots = new SnapshotService(client);
+    this.connections = new ConnectionService(client);
   }
 }
 
@@ -71,6 +74,12 @@ class FolderService extends CrudService<Folder> {
 class SnapshotService extends CrudService<Snapshot> {
   get baseCrudPath(): string {
     return "/api/pbl/snapshots";
+  }
+}
+
+class ConnectionService extends CrudService<Connection> {
+  get baseCrudPath(): string {
+    return "/api/pbl/connections";
   }
 }
 

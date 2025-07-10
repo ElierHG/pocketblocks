@@ -7,6 +7,7 @@ import groups from "./groups";
 import organizations from "./organizations";
 import snapshots from "./snapshots";
 import users from "./users";
+import connections from "./connections";
 import VERSION from "./VERSION";
 
 export default [
@@ -18,6 +19,7 @@ export default [
   ...groups,
   ...organizations,
   ...snapshots,
+  ...connections,
   ...users,
   ...VERSION,
 ];
