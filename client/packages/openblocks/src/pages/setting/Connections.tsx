@@ -105,7 +105,7 @@ export function ConnectionsSetting() {
       <Level1SettingPageTitleWithBtn>
         {trans("settings.connections")}
         <TacoButton buttonType="primary" onClick={() => openModal()}>
-          {trans("add")}
+          {trans("addItem")}
         </TacoButton>
       </Level1SettingPageTitleWithBtn>
       <Table
