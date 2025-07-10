@@ -1348,6 +1348,7 @@ export const en = {
     lab: "Lab",
     branding: "Branding",
     idSource: "Authentication",
+    connections: "Connections",
     premium: "Premium",
   },
   memberSettings: {

@@ -2,6 +2,7 @@ import { ThemeHome } from "./theme";
 import { AdvancedSetting } from "./advanced/AdvancedSetting";
 import { BrandingSettings } from "./branding/BrandingSetting";
 import { IdSourceHome } from "./idSource"
+import ConnectionsSetting from "./Connections"
 import { trans } from "i18n";
 import { TwoColumnSettingPageContent } from "./styled";
 import SubSideBar from "components/layout/SubSideBar";
@@ -17,6 +18,7 @@ enum SettingPageEnum {
   Branding = "branding",
   Advanced = "advanced",
   IdSource = "idsource",
+  Connections = "connections",
 }
 
 export function SettingHome() {
@@ -39,6 +41,10 @@ export function SettingHome() {
       key: SettingPageEnum.IdSource,
       label: trans("settings.idSource"),
     },
+    {
+      key: SettingPageEnum.Connections,
+      label: trans("settings.connections"),
+    },
   ];
 
   return (
@@ -57,6 +63,7 @@ export function SettingHome() {
       {selectKey === SettingPageEnum.Advanced && <AdvancedSetting />}
       {selectKey === SettingPageEnum.Branding && <BrandingSettings />}
       {selectKey === SettingPageEnum.IdSource && <IdSourceHome />}
+      {selectKey === SettingPageEnum.Connections && <ConnectionsSetting />}
     </TwoColumnSettingPageContent>
   );
 }

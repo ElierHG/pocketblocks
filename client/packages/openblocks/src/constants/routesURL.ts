@@ -15,6 +15,7 @@ export const THEME_DETAIL = "/setting/theme/detail";
 
 export const IDSOURCE_SETTING = "/setting/idsource";
 export const IDSOURCE_DETAIL = "/setting/idsource/detail";
+export const CONNECTION_SETTING = "/setting/connections";
 
 export const PERMISSION_SETTING_DETAIL = `${PERMISSION_SETTING}/:groupId`;
 export const ORGANIZATION_SETTING_DETAIL = `${ORGANIZATION_SETTING}/:orgId`;

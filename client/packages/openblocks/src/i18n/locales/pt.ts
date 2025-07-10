@@ -1383,6 +1383,7 @@ export const pt = {
     lab: "Laboratório",
     branding: "Marca",
     idSource: "Autenticação",
+    connections: "Conexões",
     premium: "Premium",
   },
   memberSettings: {
