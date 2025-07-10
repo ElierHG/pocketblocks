@@ -1,9 +1,9 @@
 package core
 
 import (
+	"github.com/labstack/echo/v5"
 	"github.com/pedrozadotdev/pocketblocks/server/apis"
 	"github.com/pedrozadotdev/pocketblocks/server/daos"
-	"github.com/labstack/echo/v5"
 	"github.com/pocketbase/pocketbase"
 	a "github.com/pocketbase/pocketbase/apis"
 )
@@ -17,4 +17,5 @@ func registerRoutes(app *pocketbase.PocketBase, e *echo.Echo) {
 	apis.BindFolderApi(dao, group, logMiddleware)
 	apis.BindSettingsApi(dao, group, logMiddleware)
 	apis.BindApplicationApi(dao, group, logMiddleware)
+	apis.BindConnectionApi(dao, group, logMiddleware)
 }

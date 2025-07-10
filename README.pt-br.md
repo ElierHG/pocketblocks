@@ -29,6 +29,34 @@ Construir um aplicativo interno leva basicamente 4 passos:
 3. Configure [manipuladores de eventos](docs/pt-br/build-apps/event-handlers.md) para acionar funções javascript, controlar componentes ou outras ações em reação às interações do usuário.
 4. Visualize e compartilhe seu aplicativo com outras pessoas.
 
+## Conectando ao Microsoft SQL Server
+
+É possível utilizar o pacote `server/mssql` para abrir conexões
+`database/sql` com um servidor SQL Server. Os seguintes parâmetros podem ser
+definidos via variáveis de ambiente:
+
+```
+MSSQL_HOST     - host do servidor
+MSSQL_PORT     - porta (padrão 1433)
+MSSQL_USER     - usuário
+MSSQL_PASSWORD - senha
+MSSQL_DATABASE - banco de dados padrão
+```
+
+```go
+import "github.com/pedrozadotdev/pocketblocks/server/mssql"
+
+db, err := mssql.Open(mssql.ConfigFromEnv())
+if err != nil {
+    // trate o erro
+}
+defer db.Close()
+```
+
+Administradores podem criar conexões adicionais de SQL Server pelo painel de
+administração. Essas conexões ficam disponíveis para uso na criação de
+consultas dentro do editor de aplicativos.
+
 ## Licença
 
 AGPL3

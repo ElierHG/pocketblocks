@@ -29,6 +29,34 @@ Building an internal app basically takes 4 steps:
 3. Set up [event handlers](docs/en/build-apps/event-handlers.md) to trigger javascript functions, control components or other actions in reaction to user interactions.
 4. Preview and share your app with others.
 
+## Connecting to Microsoft SQL Server
+
+PocketBlocks can also connect to external Microsoft SQL Server instances. The
+package `server/mssql` provides helper functions to open a `database/sql`
+connection using environment variables:
+
+```
+MSSQL_HOST     - server hostname
+MSSQL_PORT     - server port (defaults to 1433)
+MSSQL_USER     - database user
+MSSQL_PASSWORD - user password
+MSSQL_DATABASE - default database name
+```
+
+```go
+import "github.com/pedrozadotdev/pocketblocks/server/mssql"
+
+db, err := mssql.Open(mssql.ConfigFromEnv())
+if err != nil {
+    // handle error
+}
+defer db.Close()
+```
+
+Administrators can create additional SQL Server connections from the dashboard.
+These connections are stored in PocketBlocks and can be selected when building
+queries in the app editor.
+
 ## License
 
 AGPL3
