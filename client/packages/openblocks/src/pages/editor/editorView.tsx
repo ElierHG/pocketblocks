@@ -29,6 +29,7 @@ import {
 import RightPanel from "pages/editor/right/RightPanel";
 import EditorTutorials from "pages/tutorials/editorTutorials";
 import { editorContentClassName, UserGuideLocationState } from "pages/tutorials/tutorialsConstant";
+import AiChatPanel from "pages/editor/AiChatPanel";
 import React, { useCallback, useContext, useLayoutEffect, useMemo, useState } from "react";
 import { Helmet } from "react-helmet";
 import { useDispatch, useSelector } from "react-redux";
@@ -194,6 +195,7 @@ function EditorView(props: EditorViewProps) {
   );
   const [menuKey, setMenuKey] = useState<string>(SiderKey.State);
   const [height, setHeight] = useState<number>();
+  const [showAiPanel, setShowAiPanel] = useState(false);
   const dispatch = useDispatch();
 
   const [panelStatus, setPanelStatus] = useState(() => {
@@ -395,8 +397,42 @@ function EditorView(props: EditorViewProps) {
           )}
         </Body>
       </EditorGlobalHotKeys>
+      {!readOnly && !showAppSnapshot && (
+        <>
+          {!showAiPanel && (
+            <AiButton onClick={() => setShowAiPanel(true)} title="AI Assistant">
+              <svg viewBox="0 0 24 24" width="22" height="22" fill="white">
+                <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/>
+              </svg>
+            </AiButton>
+          )}
+          <AiChatPanel visible={showAiPanel} onClose={() => setShowAiPanel(false)} />
+        </>
+      )}
     </Height100Div>
   );
 }
+
+const AiButton = styled.button`
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #315efb 0%, #5b8def 100%);
+  border: none;
+  cursor: pointer;
+  box-shadow: 0 4px 16px rgba(49, 94, 251, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 999;
+  transition: transform 0.2s, box-shadow 0.2s;
+  &:hover {
+    transform: scale(1.1);
+    box-shadow: 0 6px 20px rgba(49, 94, 251, 0.5);
+  }
+`;
 
 export default EditorView;

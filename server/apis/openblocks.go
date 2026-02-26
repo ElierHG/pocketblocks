@@ -27,7 +27,7 @@ type openblocksApi struct {
 	dao *daos.Dao
 }
 
-func BindOpenblocksApi(app *pocketbase.PocketBase, dao *daos.Dao, e *echo.Echo) {
+func BindOpenblocksApi(app *pocketbase.PocketBase, dao *daos.Dao, e *echo.Echo) *openblocksApi {
 	api := &openblocksApi{app: app, dao: dao}
 
 	// Auth
@@ -94,6 +94,8 @@ func BindOpenblocksApi(app *pocketbase.PocketBase, dao *daos.Dao, e *echo.Echo) 
 
 	// Avatar upload
 	e.POST("/api/users/avatar", api.usersAvatarUpload)
+
+	return api
 }
 
 // --- Response helpers ---
