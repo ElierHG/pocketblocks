@@ -7,3 +7,4 @@ server/pbl_public/*
 server/pb_migrations/*
 server/ui/dist/*
 server/data
+server/pocketblocks
