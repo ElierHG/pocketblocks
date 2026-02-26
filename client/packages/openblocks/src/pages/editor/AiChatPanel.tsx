@@ -326,7 +326,22 @@ export default function AiChatPanel({ visible, onClose }: AiChatPanelProps) {
   const applyDSL = useCallback((newDSL: any) => {
     if (!editorState || !newDSL) return;
     try {
-      editorState.setComp((comp) => comp.reduce(comp.changeValueAction(newDSL)));
+      const currentValue = editorState.rootComp.toJsonValue();
+      const currentUI = currentValue?.ui;
+      const newUI = newDSL?.ui;
+
+      if (!newUI) return;
+
+      // Merge AI components into the existing root structure, preserving the
+      // original compType (module vs page) to avoid blanking the editor.
+      const mergedUI = {
+        ...currentUI,
+        comp: { ...(currentUI?.comp || {}), ...(newUI.comp || {}) },
+        layout: { ...(currentUI?.layout || {}), ...(newUI.layout || {}) },
+      };
+
+      const mergedDSL = { ...currentValue, ...newDSL, ui: mergedUI };
+      editorState.setComp((comp) => comp.reduce(comp.changeValueAction(mergedDSL)));
     } catch (e) {
       message.error("Failed to apply changes");
       console.error("Apply DSL error:", e);
