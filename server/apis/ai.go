@@ -6,10 +6,22 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/labstack/echo/v5"
 	"github.com/pedrozadotdev/pocketblocks/server/daos"
 	"github.com/pocketbase/pocketbase"
+)
+
+const (
+	codexClientID             = "app_EMoamEEZ73f0CkXaXp7hrann"
+	codexDeviceCodeEndpoint   = "https://auth0.openai.com/oauth/device/code"
+	codexTokenEndpoint        = "https://auth0.openai.com/oauth/token"
+	codexDeviceVerificationUI = "https://auth.openai.com/codex/device"
+	codexRefreshTokenEndpoint = "https://auth0.openai.com/oauth/token"
 )
 
 type aiApi struct {
@@ -24,26 +36,49 @@ func BindAiApi(app *pocketbase.PocketBase, dao *daos.Dao, ob *openblocksApi, e *
 	e.GET("/api/ai/config", api.getConfig)
 	e.PUT("/api/ai/config", api.setConfig)
 	e.POST("/api/ai/chat", api.chat)
+	e.POST("/api/ai/auth/save-tokens", api.saveTokens)
+	e.POST("/api/ai/auth/codex-import", api.importCodexAuth)
 }
 
-// --- Config: store/retrieve OpenAI API key in PBL settings ---
+// --- Codex auth.json structure ---
+
+type codexAuthJSON struct {
+	AuthMode    string     `json:"auth_mode"`
+	OpenAIKey   string     `json:"openai_api_key"`
+	Tokens      *tokenData `json:"tokens"`
+	LastRefresh string     `json:"last_refresh"`
+}
+
+type tokenData struct {
+	IDToken      interface{} `json:"id_token"`
+	AccessToken  string      `json:"access_token"`
+	RefreshToken string      `json:"refresh_token"`
+	AccountID    string      `json:"account_id"`
+}
+
+type storedAuth struct {
+	AuthMethod   string `json:"auth_method"` // "api_key", "codex_chatgpt"
+	APIKey       string `json:"api_key"`
+	AccessToken  string `json:"access_token"`
+	RefreshToken string `json:"refresh_token"`
+}
+
+// --- Config endpoint ---
 
 func (api *aiApi) getConfig(c echo.Context) error {
 	if !api.ob.isAdmin(c) {
 		return errResp(c, 401, "Unauthorized")
 	}
 
-	settings := api.dao.GetPblSettings()
-	s, _ := settings.Clone()
-
-	hasKey := false
-	if key := api.getStoredAPIKey(); key != "" {
-		hasKey = true
-	}
+	auth := api.getStoredAuth()
+	codexAvailable := api.codexAuthFileExists()
 
 	return okResp(c, map[string]interface{}{
-		"hasApiKey":  hasKey,
-		"model":     getAIModel(s),
+		"hasApiKey":      auth.APIKey != "",
+		"hasCodexAuth":   auth.AccessToken != "",
+		"authMethod":     auth.AuthMethod,
+		"codexAvailable": codexAvailable,
+		"model":          "gpt-4o",
 	})
 }
 
@@ -54,14 +89,17 @@ func (api *aiApi) setConfig(c echo.Context) error {
 
 	var body struct {
 		ApiKey string `json:"apiKey"`
-		Model  string `json:"model"`
 	}
 	if err := c.Bind(&body); err != nil {
 		return errResp(c, 400, "Invalid request")
 	}
 
 	if body.ApiKey != "" {
-		if err := api.storeAPIKey(body.ApiKey); err != nil {
+		auth := storedAuth{
+			AuthMethod: "api_key",
+			APIKey:     body.ApiKey,
+		}
+		if err := api.saveAuth(auth); err != nil {
 			return errResp(c, 500, "Failed to store API key")
 		}
 	}
@@ -69,7 +107,98 @@ func (api *aiApi) setConfig(c echo.Context) error {
 	return okResp(c, map[string]interface{}{"success": true})
 }
 
-func (api *aiApi) getStoredAPIKey() string {
+// --- Save tokens from frontend device code flow ---
+
+func (api *aiApi) saveTokens(c echo.Context) error {
+	if !api.ob.isAdmin(c) {
+		return errResp(c, 401, "Unauthorized")
+	}
+
+	var body struct {
+		AccessToken  string `json:"accessToken"`
+		RefreshToken string `json:"refreshToken"`
+	}
+	if err := c.Bind(&body); err != nil {
+		return errResp(c, 400, "Invalid request")
+	}
+
+	if body.AccessToken == "" {
+		return errResp(c, 400, "Access token is required")
+	}
+
+	auth := storedAuth{
+		AuthMethod:   "codex_chatgpt",
+		AccessToken:  body.AccessToken,
+		RefreshToken: body.RefreshToken,
+	}
+	if err := api.saveAuth(auth); err != nil {
+		return errResp(c, 500, "Failed to store tokens")
+	}
+
+	return okResp(c, map[string]interface{}{"success": true})
+}
+
+// --- Import from Codex CLI ---
+
+func (api *aiApi) importCodexAuth(c echo.Context) error {
+	if !api.ob.isAdmin(c) {
+		return errResp(c, 401, "Unauthorized")
+	}
+
+	codexAuth, err := api.readCodexAuthFile()
+	if err != nil {
+		return errResp(c, 400, "Could not read Codex CLI auth file: "+err.Error())
+	}
+
+	if codexAuth.OpenAIKey != "" {
+		auth := storedAuth{
+			AuthMethod: "api_key",
+			APIKey:     codexAuth.OpenAIKey,
+		}
+		if err := api.saveAuth(auth); err != nil {
+			return errResp(c, 500, "Failed to store credentials")
+		}
+		return okResp(c, map[string]interface{}{"method": "api_key"})
+	}
+
+	if codexAuth.Tokens != nil && codexAuth.Tokens.AccessToken != "" {
+		auth := storedAuth{
+			AuthMethod:   "codex_chatgpt",
+			AccessToken:  codexAuth.Tokens.AccessToken,
+			RefreshToken: codexAuth.Tokens.RefreshToken,
+		}
+		if err := api.saveAuth(auth); err != nil {
+			return errResp(c, 500, "Failed to store credentials")
+		}
+		return okResp(c, map[string]interface{}{"method": "codex_chatgpt"})
+	}
+
+	return errResp(c, 400, "No valid credentials found in Codex CLI auth file")
+}
+
+// --- Storage helpers ---
+
+func (api *aiApi) getStoredAuth() storedAuth {
+	param, err := api.dao.FindParamByKey("pbl_ai_auth")
+	if err != nil {
+		old := api.getStoredAPIKeyLegacy()
+		if old != "" {
+			return storedAuth{AuthMethod: "api_key", APIKey: old}
+		}
+		return storedAuth{}
+	}
+	var auth storedAuth
+	if err := json.Unmarshal(param.Value, &auth); err != nil {
+		return storedAuth{}
+	}
+	return auth
+}
+
+func (api *aiApi) saveAuth(auth storedAuth) error {
+	return api.dao.SaveParam("pbl_ai_auth", auth)
+}
+
+func (api *aiApi) getStoredAPIKeyLegacy() string {
 	param, err := api.dao.FindParamByKey("pbl_openai_key")
 	if err != nil {
 		return ""
@@ -81,13 +210,119 @@ func (api *aiApi) getStoredAPIKey() string {
 	return key
 }
 
-func (api *aiApi) storeAPIKey(key string) error {
-	return api.dao.SaveParam("pbl_openai_key", key)
+func (api *aiApi) codexAuthFileExists() bool {
+	path := api.codexAuthPath()
+	_, err := os.Stat(path)
+	return err == nil
 }
 
-func getAIModel(s interface{}) string {
-	return "gpt-4o"
+func (api *aiApi) codexAuthPath() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	codexHome := os.Getenv("CODEX_HOME")
+	if codexHome == "" {
+		codexHome = filepath.Join(home, ".codex")
+	}
+	return filepath.Join(codexHome, "auth.json")
 }
+
+func (api *aiApi) readCodexAuthFile() (*codexAuthJSON, error) {
+	path := api.codexAuthPath()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("cannot read %s: %w", path, err)
+	}
+	var auth codexAuthJSON
+	if err := json.Unmarshal(data, &auth); err != nil {
+		return nil, fmt.Errorf("invalid JSON in %s: %w", path, err)
+	}
+	return &auth, nil
+}
+
+// --- Token refresh ---
+
+func (api *aiApi) refreshAccessToken(refreshToken string) (string, string, error) {
+	data := url.Values{}
+	data.Set("grant_type", "refresh_token")
+	data.Set("client_id", codexClientID)
+	data.Set("refresh_token", refreshToken)
+	data.Set("scope", "openid profile email")
+
+	resp, err := http.PostForm(codexRefreshTokenEndpoint, data)
+	if err != nil {
+		return "", "", err
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	var tokenResp struct {
+		AccessToken  string `json:"access_token"`
+		RefreshToken string `json:"refresh_token"`
+		Error        string `json:"error"`
+	}
+	json.Unmarshal(body, &tokenResp)
+
+	if tokenResp.Error != "" {
+		return "", "", fmt.Errorf("refresh failed: %s", tokenResp.Error)
+	}
+
+	newRefresh := tokenResp.RefreshToken
+	if newRefresh == "" {
+		newRefresh = refreshToken
+	}
+	return tokenResp.AccessToken, newRefresh, nil
+}
+
+// --- Resolve the bearer token for OpenAI API calls ---
+
+func (api *aiApi) resolveOpenAIAuth() (string, error) {
+	auth := api.getStoredAuth()
+
+	if auth.AuthMethod == "api_key" && auth.APIKey != "" {
+		return auth.APIKey, nil
+	}
+
+	if auth.AuthMethod == "codex_chatgpt" && auth.AccessToken != "" {
+		return auth.AccessToken, nil
+	}
+
+	return "", fmt.Errorf("no AI authentication configured")
+}
+
+func (api *aiApi) handleAuthFailureAndRetry(reqFn func(token string) (*http.Response, error)) (*http.Response, error) {
+	auth := api.getStoredAuth()
+
+	token := auth.APIKey
+	if auth.AuthMethod == "codex_chatgpt" {
+		token = auth.AccessToken
+	}
+	if token == "" {
+		return nil, fmt.Errorf("no AI authentication configured")
+	}
+
+	resp, err := reqFn(token)
+	if err != nil {
+		return nil, err
+	}
+
+	if resp.StatusCode == 401 && auth.AuthMethod == "codex_chatgpt" && auth.RefreshToken != "" {
+		resp.Body.Close()
+		newAccess, newRefresh, err := api.refreshAccessToken(auth.RefreshToken)
+		if err != nil {
+			return nil, fmt.Errorf("token refresh failed: %w", err)
+		}
+		auth.AccessToken = newAccess
+		auth.RefreshToken = newRefresh
+		api.saveAuth(auth)
+		return reqFn(newAccess)
+	}
+
+	return resp, nil
+}
+
+// --- Chat endpoint ---
 
 const systemPrompt = `You are an AI assistant integrated into PocketBlocks, a low-code app builder. You help users build pages and dashboards by generating and modifying page DSL (Domain Specific Language) JSON.
 
@@ -205,11 +440,6 @@ func (api *aiApi) chat(c echo.Context) error {
 		return errResp(c, 401, "Unauthorized")
 	}
 
-	apiKey := api.getStoredAPIKey()
-	if apiKey == "" {
-		return errResp(c, 400, "OpenAI API key not configured. Please set it in Settings > AI.")
-	}
-
 	var body struct {
 		Message    string      `json:"message"`
 		CurrentDSL interface{} `json:"currentDSL"`
@@ -239,8 +469,8 @@ func (api *aiApi) chat(c echo.Context) error {
 			{"role": "system", "content": systemPrompt},
 			{"role": "user", "content": userMessage},
 		},
-		"temperature":  0.7,
-		"max_tokens":   16000,
+		"temperature":    0.7,
+		"max_tokens":     16000,
 		"response_format": map[string]interface{}{"type": "json_object"},
 	}
 
@@ -249,17 +479,21 @@ func (api *aiApi) chat(c echo.Context) error {
 		return errResp(c, 500, "Failed to build AI request")
 	}
 
-	req, err := http.NewRequest("POST", "https://api.openai.com/v1/chat/completions", bytes.NewReader(reqBody))
+	resp, err := api.handleAuthFailureAndRetry(func(token string) (*http.Response, error) {
+		req, err := http.NewRequest("POST", "https://api.openai.com/v1/chat/completions", bytes.NewReader(reqBody))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		if strings.HasPrefix(token, "sk-") {
+			req.Header.Set("Authorization", "Bearer "+token)
+		} else {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		return (&http.Client{}).Do(req)
+	})
 	if err != nil {
-		return errResp(c, 500, "Failed to create AI request")
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+apiKey)
-
-	client := &http.Client{}
-	resp, err := client.Do(req)
-	if err != nil {
-		return errResp(c, 500, "Failed to call AI service: "+err.Error())
+		return errResp(c, 500, "AI request failed: "+err.Error())
 	}
 	defer resp.Body.Close()
 
