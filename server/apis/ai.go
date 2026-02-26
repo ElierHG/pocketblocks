@@ -549,41 +549,38 @@ Rules:
 2. Give each component a unique, descriptive name.
 3. After all tool calls, provide a brief text summary of what you did.`
 
-var editorTools = []map[string]interface{}{
-	{
-		"type": "function",
-		"function": map[string]interface{}{
-			"name":        "add_component",
-			"description": "Add a UI component to the app canvas at a specific position",
-			"parameters": map[string]interface{}{
+var modifyPageParams = map[string]interface{}{
+	"type": "object",
+	"properties": map[string]interface{}{
+		"components": map[string]interface{}{
+			"type":        "array",
+			"description": "List of components to add to the canvas",
+			"items": map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
-					"comp_type":   map[string]interface{}{"type": "string", "description": "Component type (e.g. text, button, input, table, select, image)"},
-					"name":        map[string]interface{}{"type": "string", "description": "Unique display name for the component (e.g. welcomeText, submitBtn)"},
-					"props":       map[string]interface{}{"type": "object", "description": "Component-specific properties as key-value pairs"},
-					"x":           map[string]interface{}{"type": "integer", "description": "X grid position (0-23)"},
-					"y":           map[string]interface{}{"type": "integer", "description": "Y grid position (row number)"},
-					"w":           map[string]interface{}{"type": "integer", "description": "Width in grid columns (1-24)"},
-					"h":           map[string]interface{}{"type": "integer", "description": "Height in grid rows"},
+					"comp_type": map[string]interface{}{"type": "string", "description": "Component type (text, button, input, table, select, image, checkbox, etc.)"},
+					"name":      map[string]interface{}{"type": "string", "description": "Unique display name (e.g. welcomeText, submitBtn)"},
+					"props":     map[string]interface{}{"type": "object", "description": "Component-specific properties"},
+					"x":         map[string]interface{}{"type": "integer", "description": "X grid position (0-23)"},
+					"y":         map[string]interface{}{"type": "integer", "description": "Y grid position (row number)"},
+					"w":         map[string]interface{}{"type": "integer", "description": "Width in columns (1-24)"},
+					"h":         map[string]interface{}{"type": "integer", "description": "Height in rows"},
 				},
 				"required": []string{"comp_type", "name"},
 			},
 		},
+		"explanation": map[string]interface{}{"type": "string", "description": "Brief explanation of the changes"},
 	},
-	{
-		"type": "function",
-		"function": map[string]interface{}{
-			"name":        "remove_component",
-			"description": "Remove a component from the canvas by name",
-			"parameters": map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"name": map[string]interface{}{"type": "string", "description": "Name of the component to remove"},
-				},
-				"required": []string{"name"},
-			},
-		},
-	},
+	"required":             []string{"components", "explanation"},
+	"additionalProperties": false,
+}
+
+var completionsTools = []map[string]interface{}{
+	{"type": "function", "function": map[string]interface{}{"name": "modify_page", "description": "Add or modify components on the app canvas. Call this once with all components.", "parameters": modifyPageParams}},
+}
+
+var responsesTools = []map[string]interface{}{
+	{"type": "function", "name": "modify_page", "description": "Add or modify components on the app canvas. Call this once with all components.", "parameters": modifyPageParams},
 }
 
 func (api *aiApi) chatStream(c echo.Context) error {
@@ -623,7 +620,7 @@ func (api *aiApi) toolStreamViaCompletions(c echo.Context, userMessage string) e
 			{"role": "system", "content": toolSystemPrompt},
 			{"role": "user", "content": userMessage},
 		},
-		"tools":       editorTools,
+		"tools":       completionsTools,
 		"temperature":  0.7,
 		"stream":       true,
 	}
@@ -721,13 +718,7 @@ func (api *aiApi) processCompletionsToolStream(c echo.Context, body io.Reader) e
 	for _, tc := range toolCalls {
 		var args map[string]interface{}
 		json.Unmarshal([]byte(tc.Args.String()), &args)
-		actionPayload, _ := json.Marshal(map[string]interface{}{
-			"type":   "action",
-			"action": tc.Name,
-			"params": args,
-		})
-		fmt.Fprintf(w, "data: %s\n\n", actionPayload)
-		w.Flush()
+		emitToolCallActions(w, tc.Name, args, &textContent)
 	}
 
 	donePayload, _ := json.Marshal(map[string]interface{}{
@@ -746,7 +737,7 @@ func (api *aiApi) toolStreamViaResponses(c echo.Context, userMessage string, acc
 		"input": []map[string]interface{}{
 			{"role": "user", "content": userMessage},
 		},
-		"tools":  editorTools,
+		"tools":  responsesTools,
 		"stream": true,
 		"store":  false,
 	}
@@ -829,13 +820,7 @@ func (api *aiApi) processResponsesToolStream(c echo.Context, body io.Reader) err
 			if event.Item.Type == "function_call" && event.Item.Name != "" {
 				var args map[string]interface{}
 				json.Unmarshal([]byte(event.Item.Arguments), &args)
-				actionPayload, _ := json.Marshal(map[string]interface{}{
-					"type":   "action",
-					"action": event.Item.Name,
-					"params": args,
-				})
-				fmt.Fprintf(w, "data: %s\n\n", actionPayload)
-				w.Flush()
+				emitToolCallActions(w, event.Item.Name, args, &textContent)
 			}
 			if event.Item.Type == "message" {
 				for _, ct := range event.Item.Content {
@@ -854,6 +839,40 @@ func (api *aiApi) processResponsesToolStream(c echo.Context, body io.Reader) err
 	fmt.Fprintf(w, "data: %s\n\n", donePayload)
 	w.Flush()
 	return nil
+}
+
+// emitToolCallActions converts a tool call (especially modify_page) into
+// individual add_component action events sent to the client.
+func emitToolCallActions(w *echo.Response, name string, args map[string]interface{}, textContent *strings.Builder) {
+	if name == "modify_page" {
+		if explanation, ok := args["explanation"].(string); ok && explanation != "" {
+			textContent.Reset()
+			textContent.WriteString(explanation)
+		}
+		if components, ok := args["components"].([]interface{}); ok {
+			for _, comp := range components {
+				compMap, ok := comp.(map[string]interface{})
+				if !ok {
+					continue
+				}
+				actionPayload, _ := json.Marshal(map[string]interface{}{
+					"type":   "action",
+					"action": "add_component",
+					"params": compMap,
+				})
+				fmt.Fprintf(w, "data: %s\n\n", actionPayload)
+				w.Flush()
+			}
+		}
+	} else {
+		actionPayload, _ := json.Marshal(map[string]interface{}{
+			"type":   "action",
+			"action": name,
+			"params": args,
+		})
+		fmt.Fprintf(w, "data: %s\n\n", actionPayload)
+		w.Flush()
+	}
 }
 
 func writeSSEEvent(w *echo.Response, eventType string, data string) {
