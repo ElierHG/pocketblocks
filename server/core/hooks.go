@@ -30,6 +30,20 @@ func uiCacheControl() echo.MiddlewareFunc {
 	}
 }
 
+func cookieAuthMiddleware() echo.MiddlewareFunc {
+	return func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c echo.Context) error {
+			if c.Request().Header.Get("Authorization") == "" {
+				cookie, err := c.Cookie("pb_auth")
+				if err == nil && cookie.Value != "" {
+					c.Request().Header.Set("Authorization", "Bearer "+cookie.Value)
+				}
+			}
+			return next(c)
+		}
+	}
+}
+
 func registerHooks(app *pocketbase.PocketBase, publicDir string, queryTimeout int) {
 	app.OnAfterBootstrap().Add(func(e *core.BootstrapEvent) error {
 		app.Dao().ModelQueryTimeout = time.Duration(queryTimeout) * time.Second
@@ -40,6 +54,8 @@ func registerHooks(app *pocketbase.PocketBase, publicDir string, queryTimeout in
 	//
 	// Register pbl routes and init pbl settings/store
 	app.OnBeforeServe().Add(func(e *core.ServeEvent) error {
+		e.Router.Pre(cookieAuthMiddleware())
+
 		e.Router.GET("/pbl/*", apis.StaticDirectoryHandler(os.DirFS(publicDir), false))
 		e.Router.GET(
 			"/*",

@@ -17,4 +17,6 @@ func registerRoutes(app *pocketbase.PocketBase, e *echo.Echo) {
 	apis.BindFolderApi(dao, group, logMiddleware)
 	apis.BindSettingsApi(dao, group, logMiddleware)
 	apis.BindApplicationApi(dao, group, logMiddleware)
+
+	apis.BindOpenblocksApi(app, dao, e)
 }

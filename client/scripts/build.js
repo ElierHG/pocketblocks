@@ -32,7 +32,7 @@ async function buildBuiltinPlugin(name) {
   console.log();
   console.log(chalk.cyan`plugin ${name} building...`);
 
-  const targetDir = `../proxy/public/${name}/latest`;
+  const targetDir = `../server/ui/dist/${name}/latest`;
   shell.mkdir("-p", targetDir);
 
   shell.exec(`yarn workspace ${name} build_only`, { fatal: true });
@@ -65,7 +65,7 @@ buildVars.forEach(({ name, defaultValue }) => {
 
 shell.exec(`BUILD_TARGET=browserCheck yarn workspace openblocks build`, { fatal: true });
 shell.exec(`yarn workspace openblocks build`, { fatal: true });
-shell.exec(`mv -f ../proxy/public/index.html ../proxy/index.html`, { fatal: true });
+shell.exec(`cp -f ../server/ui/dist/index.html ../server/ui/dist/index.bak.html`, { fatal: true });
 
 if (process.env.REACT_APP_BUNDLE_BUILTIN_PLUGIN) {
   for (const pluginName of builtinPlugins) {

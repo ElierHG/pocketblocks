@@ -42,10 +42,10 @@ export const viteConfig: UserConfig = {
     manifest: true,
     target: "es2020",
     cssTarget: "chrome63",
-    outDir: "../../../proxy/public",
+    outDir: "../../../server/ui/dist",
     emptyOutDir: false,
     rollupOptions: {
-      external: ["/js/proxy.js"],
+      external: [],
       input: {
         main: path.resolve(__dirname, "index.html"),
         embedded: path.resolve(__dirname, "embedded.html"),
@@ -80,7 +80,6 @@ export const viteConfig: UserConfig = {
   },
   server: {
     proxy: {
-      "/js/proxy.js": "http://127.0.0.1:8090",
       "/_": "http://127.0.0.1:8090",
       "/api/realtime": {
         target: "ws://127.0.0.1:8090",
@@ -130,7 +129,7 @@ export const viteConfig: UserConfig = {
           injectOptions: {
             data: {
               browserCheckScript: isDev ? "" : `<script src="/js/browser-check.js"></script>`,
-              proxyScript: isDev ? `<script type="module" crossorigin src="/js/proxy.js"></script>` : `<!-- PROXYSCRIPT -->`,
+              proxyScript: "",
             },
           }
         },
