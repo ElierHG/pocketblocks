@@ -374,9 +374,20 @@ export default function AiChatPanel({ visible, onClose }: AiChatPanelProps) {
       </AuthMethodBtn>
 
       {authConfigured && (
-        <Button type="link" onClick={() => { setAuthView("chat"); setShowSettings(false); }} block style={{ marginTop: 8 }}>
-          Back to chat
-        </Button>
+        <>
+          <Button type="link" onClick={() => { setAuthView("chat"); setShowSettings(false); }} block style={{ marginTop: 8 }}>
+            Back to chat
+          </Button>
+          <Button type="link" danger onClick={async () => {
+            try {
+              await Api.put("ai/config", { clear: true });
+              setAuthConfigured(false);
+              message.success("AI auth cleared");
+            } catch { message.error("Failed to clear"); }
+          }} block size="small" style={{ marginTop: 4, fontSize: 12 }}>
+            Disconnect
+          </Button>
+        </>
       )}
     </SetupArea>
   );

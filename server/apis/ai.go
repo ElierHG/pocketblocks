@@ -91,9 +91,17 @@ func (api *aiApi) setConfig(c echo.Context) error {
 
 	var body struct {
 		ApiKey string `json:"apiKey"`
+		Clear  bool   `json:"clear"`
 	}
 	if err := c.Bind(&body); err != nil {
 		return errResp(c, 400, "Invalid request")
+	}
+
+	if body.Clear {
+		if err := api.saveAuth(storedAuth{}); err != nil {
+			return errResp(c, 500, "Failed to clear auth")
+		}
+		return okResp(c, map[string]interface{}{"success": true})
 	}
 
 	if body.ApiKey != "" {
@@ -505,7 +513,10 @@ func (api *aiApi) chat(c echo.Context) error {
 	}
 
 	if resp.StatusCode != 200 {
-		return errResp(c, resp.StatusCode, "AI service error: "+string(respBody))
+		// Return 502 instead of forwarding OpenAI's status code directly,
+		// because a 401 from OpenAI would trigger the client's auth interceptor
+		// and log the user out.
+		return errResp(c, 502, "AI service error: "+string(respBody))
 	}
 
 	var openaiResp struct {
