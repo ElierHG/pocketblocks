@@ -521,17 +521,80 @@ func (api *aiApi) chat(c echo.Context) error {
 	return api.chatViaCompletions(c, userMessage)
 }
 
-// chatStream is the SSE streaming endpoint. It sends real-time events to the
-// client as the AI model generates a response so the UI can show incremental
-// text and auto-apply the DSL when complete.
+// --- Tool-calling streaming endpoint (MCP-style) ---
+//
+// Instead of the AI generating raw DSL JSON, it uses structured tool calls
+// (add_component, update_component, remove_component) that the client executes
+// through the editor's real dispatch system. This ensures components are added
+// correctly regardless of the app's root type (module vs page).
+
+const toolSystemPrompt = `You are an AI assistant in PocketBlocks, a low-code app builder. You modify the user's page by calling the provided tools. Do NOT output raw JSON or DSL — only use tool calls and text responses.
+
+Available component types (use these exact names for comp_type):
+text, input, textArea, password, numberInput, slider, rangeSlider, rating, switch, select, multiSelect, cascader, checkbox, radio, segmentedControl, date, dateRange, time, timeRange, file, button, link, dropdown, table, image, progress, progressCircle, divider, qrCode, form, container, tabbedContainer, modal, listView, chart, navigation, iframe, jsonExplorer, jsonEditor, tree, treeSelect, audio, video, drawer, carousel, toggleButton, signature, scanner
+
+Component properties (pass as JSON in the props field):
+- text: {"text": "display text"} — supports markdown
+- button: {"text": "label", "type": "primary|default|link"}
+- input: {"defaultValue": "...", "label": "...", "placeholder": "..."}
+- table: {"data": "[{...}]"} — JSON string of array
+- image: {"src": "url"}
+- select: {"options": "[{\"label\":\"...\",\"value\":\"...\"}]"}
+- Most string props support {{expressions}} for dynamic values
+
+Layout uses a 24-column grid. Position with x (0-23), y (row), w (width, 1-24), h (height in rows).
+
+Rules:
+1. Always use add_component to add new components.
+2. Give each component a unique, descriptive name.
+3. After all tool calls, provide a brief text summary of what you did.`
+
+var editorTools = []map[string]interface{}{
+	{
+		"type": "function",
+		"function": map[string]interface{}{
+			"name":        "add_component",
+			"description": "Add a UI component to the app canvas at a specific position",
+			"parameters": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"comp_type":   map[string]interface{}{"type": "string", "description": "Component type (e.g. text, button, input, table, select, image)"},
+					"name":        map[string]interface{}{"type": "string", "description": "Unique display name for the component (e.g. welcomeText, submitBtn)"},
+					"props":       map[string]interface{}{"type": "object", "description": "Component-specific properties as key-value pairs"},
+					"x":           map[string]interface{}{"type": "integer", "description": "X grid position (0-23)"},
+					"y":           map[string]interface{}{"type": "integer", "description": "Y grid position (row number)"},
+					"w":           map[string]interface{}{"type": "integer", "description": "Width in grid columns (1-24)"},
+					"h":           map[string]interface{}{"type": "integer", "description": "Height in grid rows"},
+				},
+				"required": []string{"comp_type", "name"},
+			},
+		},
+	},
+	{
+		"type": "function",
+		"function": map[string]interface{}{
+			"name":        "remove_component",
+			"description": "Remove a component from the canvas by name",
+			"parameters": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"name": map[string]interface{}{"type": "string", "description": "Name of the component to remove"},
+				},
+				"required": []string{"name"},
+			},
+		},
+	},
+}
+
 func (api *aiApi) chatStream(c echo.Context) error {
 	if !api.ob.isLoggedIn(c) {
 		return errResp(c, 401, "Unauthorized")
 	}
 
 	var body struct {
-		Message    string      `json:"message"`
-		CurrentDSL interface{} `json:"currentDSL"`
+		Message       string      `json:"message"`
+		CurrentDSL    interface{} `json:"currentDSL"`
+		ComponentList []string    `json:"componentList"`
 	}
 	if err := c.Bind(&body); err != nil {
 		return errResp(c, 400, "Invalid request")
@@ -540,35 +603,29 @@ func (api *aiApi) chatStream(c echo.Context) error {
 		return errResp(c, 400, "Message is required")
 	}
 
-	currentDSLJSON := "{}"
-	if body.CurrentDSL != nil {
-		b, _ := json.Marshal(body.CurrentDSL)
-		currentDSLJSON = string(b)
-	}
-
 	userMessage := body.Message
-	if currentDSLJSON != "{}" {
-		userMessage = fmt.Sprintf("Current page DSL:\n```json\n%s\n```\n\nUser request: %s", currentDSLJSON, body.Message)
+	if len(body.ComponentList) > 0 {
+		compListJSON, _ := json.Marshal(body.ComponentList)
+		userMessage = fmt.Sprintf("Current components on canvas: %s\n\nUser request: %s", compListJSON, body.Message)
 	}
 
 	auth := api.getStoredAuth()
 	if auth.AuthMethod == "codex_chatgpt" {
-		return api.chatStreamViaResponses(c, userMessage, auth.AccountID)
+		return api.toolStreamViaResponses(c, userMessage, auth.AccountID)
 	}
-	return api.chatStreamViaCompletions(c, userMessage)
+	return api.toolStreamViaCompletions(c, userMessage)
 }
 
-func (api *aiApi) chatStreamViaCompletions(c echo.Context, userMessage string) error {
+func (api *aiApi) toolStreamViaCompletions(c echo.Context, userMessage string) error {
 	openaiReq := map[string]interface{}{
 		"model": "gpt-4o",
 		"messages": []map[string]interface{}{
-			{"role": "system", "content": systemPrompt},
+			{"role": "system", "content": toolSystemPrompt},
 			{"role": "user", "content": userMessage},
 		},
-		"temperature":     0.7,
-		"max_tokens":      16000,
-		"response_format": map[string]interface{}{"type": "json_object"},
-		"stream":          true,
+		"tools":       editorTools,
+		"temperature":  0.7,
+		"stream":       true,
 	}
 
 	reqBody, _ := json.Marshal(openaiReq)
@@ -588,21 +645,31 @@ func (api *aiApi) chatStreamViaCompletions(c echo.Context, userMessage string) e
 	defer resp.Body.Close()
 
 	if resp.StatusCode != 200 {
-		body, _ := io.ReadAll(resp.Body)
-		if strings.Contains(string(body), "model.request") {
-			return writeSSEError(c, "Your OpenAI API key lacks the 'model.request' scope. Create a new key with full permissions at https://platform.openai.com/api-keys, or use 'Sign in with ChatGPT' instead.")
+		respBody, _ := io.ReadAll(resp.Body)
+		if strings.Contains(string(respBody), "model.request") {
+			return writeSSEError(c, "Your OpenAI API key lacks the 'model.request' scope. Create a new key at https://platform.openai.com/api-keys")
 		}
-		return writeSSEError(c, "AI service error: "+string(body))
+		return writeSSEError(c, "AI service error: "+string(respBody))
 	}
 
+	return api.processCompletionsToolStream(c, resp.Body)
+}
+
+func (api *aiApi) processCompletionsToolStream(c echo.Context, body io.Reader) error {
 	w := c.Response()
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 	w.WriteHeader(200)
 
-	var fullContent strings.Builder
-	scanner := newLineScanner(resp.Body)
+	type toolCallAccum struct {
+		Name string
+		Args strings.Builder
+	}
+	toolCalls := map[int]*toolCallAccum{}
+	var textContent strings.Builder
+
+	scanner := newLineScanner(body)
 	for scanner.Scan() {
 		line := scanner.Text()
 		if !strings.HasPrefix(line, "data: ") {
@@ -615,34 +682,71 @@ func (api *aiApi) chatStreamViaCompletions(c echo.Context, userMessage string) e
 		var chunk struct {
 			Choices []struct {
 				Delta struct {
-					Content string `json:"content"`
+					Content   string `json:"content"`
+					ToolCalls []struct {
+						Index    int `json:"index"`
+						Function struct {
+							Name      string `json:"name"`
+							Arguments string `json:"arguments"`
+						} `json:"function"`
+					} `json:"tool_calls"`
 				} `json:"delta"`
+				FinishReason string `json:"finish_reason"`
 			} `json:"choices"`
 		}
 		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
 			continue
 		}
-		if len(chunk.Choices) > 0 && chunk.Choices[0].Delta.Content != "" {
-			fullContent.WriteString(chunk.Choices[0].Delta.Content)
-			writeSSEEvent(w, "delta", chunk.Choices[0].Delta.Content)
+		if len(chunk.Choices) == 0 {
+			continue
+		}
+		delta := chunk.Choices[0].Delta
+		if delta.Content != "" {
+			textContent.WriteString(delta.Content)
+			writeSSEEvent(w, "delta", delta.Content)
+		}
+		for _, tc := range delta.ToolCalls {
+			acc, ok := toolCalls[tc.Index]
+			if !ok {
+				acc = &toolCallAccum{}
+				toolCalls[tc.Index] = acc
+			}
+			if tc.Function.Name != "" {
+				acc.Name = tc.Function.Name
+			}
+			acc.Args.WriteString(tc.Function.Arguments)
 		}
 	}
 
-	return finishStreamWithParsedContent(c, fullContent.String())
+	for _, tc := range toolCalls {
+		var args map[string]interface{}
+		json.Unmarshal([]byte(tc.Args.String()), &args)
+		actionPayload, _ := json.Marshal(map[string]interface{}{
+			"type":   "action",
+			"action": tc.Name,
+			"params": args,
+		})
+		fmt.Fprintf(w, "data: %s\n\n", actionPayload)
+		w.Flush()
+	}
+
+	donePayload, _ := json.Marshal(map[string]interface{}{
+		"type":        "done",
+		"explanation": textContent.String(),
+	})
+	fmt.Fprintf(w, "data: %s\n\n", donePayload)
+	w.Flush()
+	return nil
 }
 
-func (api *aiApi) chatStreamViaResponses(c echo.Context, userMessage string, accountID string) error {
+func (api *aiApi) toolStreamViaResponses(c echo.Context, userMessage string, accountID string) error {
 	openaiReq := map[string]interface{}{
 		"model":        "gpt-5-codex-mini",
-		"instructions": systemPrompt,
+		"instructions": toolSystemPrompt,
 		"input": []map[string]interface{}{
-			{"role": "user", "content": userMessage + "\n\nRespond in JSON format."},
+			{"role": "user", "content": userMessage},
 		},
-		"text": map[string]interface{}{
-			"format": map[string]interface{}{
-				"type": "json_object",
-			},
-		},
+		"tools":  editorTools,
 		"stream": true,
 		"store":  false,
 	}
@@ -668,22 +772,27 @@ func (api *aiApi) chatStreamViaResponses(c echo.Context, userMessage string, acc
 	defer resp.Body.Close()
 
 	if resp.StatusCode != 200 {
-		body, _ := io.ReadAll(resp.Body)
-		respStr := string(body)
+		respBody, _ := io.ReadAll(resp.Body)
+		respStr := string(respBody)
 		if strings.Contains(respStr, "insufficient permissions") {
 			return writeSSEError(c, "Your ChatGPT sign-in token doesn't have API access. Please use an API key instead.")
 		}
 		return writeSSEError(c, "AI service error: "+respStr)
 	}
 
+	return api.processResponsesToolStream(c, resp.Body)
+}
+
+func (api *aiApi) processResponsesToolStream(c echo.Context, body io.Reader) error {
 	w := c.Response()
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 	w.WriteHeader(200)
 
-	var fullContent strings.Builder
-	scanner := newLineScanner(resp.Body)
+	var textContent strings.Builder
+
+	scanner := newLineScanner(body)
 	for scanner.Scan() {
 		line := scanner.Text()
 		if !strings.HasPrefix(line, "data: ") {
@@ -696,17 +805,55 @@ func (api *aiApi) chatStreamViaResponses(c echo.Context, userMessage string, acc
 		var event struct {
 			Type  string `json:"type"`
 			Delta string `json:"delta"`
+			Item  struct {
+				Type      string `json:"type"`
+				Name      string `json:"name"`
+				Arguments string `json:"arguments"`
+				Content   []struct {
+					Type string `json:"type"`
+					Text string `json:"text"`
+				} `json:"content"`
+			} `json:"item"`
 		}
 		if err := json.Unmarshal([]byte(data), &event); err != nil {
 			continue
 		}
-		if event.Type == "response.output_text.delta" && event.Delta != "" {
-			fullContent.WriteString(event.Delta)
-			writeSSEEvent(w, "delta", event.Delta)
+
+		switch event.Type {
+		case "response.output_text.delta":
+			if event.Delta != "" {
+				textContent.WriteString(event.Delta)
+				writeSSEEvent(w, "delta", event.Delta)
+			}
+		case "response.output_item.done":
+			if event.Item.Type == "function_call" && event.Item.Name != "" {
+				var args map[string]interface{}
+				json.Unmarshal([]byte(event.Item.Arguments), &args)
+				actionPayload, _ := json.Marshal(map[string]interface{}{
+					"type":   "action",
+					"action": event.Item.Name,
+					"params": args,
+				})
+				fmt.Fprintf(w, "data: %s\n\n", actionPayload)
+				w.Flush()
+			}
+			if event.Item.Type == "message" {
+				for _, ct := range event.Item.Content {
+					if ct.Type == "output_text" && ct.Text != "" {
+						textContent.WriteString(ct.Text)
+					}
+				}
+			}
 		}
 	}
 
-	return finishStreamWithParsedContent(c, fullContent.String())
+	donePayload, _ := json.Marshal(map[string]interface{}{
+		"type":        "done",
+		"explanation": textContent.String(),
+	})
+	fmt.Fprintf(w, "data: %s\n\n", donePayload)
+	w.Flush()
+	return nil
 }
 
 func writeSSEEvent(w *echo.Response, eventType string, data string) {
@@ -722,33 +869,6 @@ func writeSSEError(c echo.Context, msg string) error {
 	w.WriteHeader(200)
 	payload, _ := json.Marshal(map[string]string{"type": "error", "data": msg})
 	fmt.Fprintf(w, "data: %s\n\n", payload)
-	w.Flush()
-	return nil
-}
-
-func finishStreamWithParsedContent(c echo.Context, content string) error {
-	w := c.Response()
-	if content == "" {
-		payload, _ := json.Marshal(map[string]string{"type": "error", "data": "AI returned no response"})
-		fmt.Fprintf(w, "data: %s\n\n", payload)
-		w.Flush()
-		return nil
-	}
-
-	var aiResult map[string]interface{}
-	if err := json.Unmarshal([]byte(content), &aiResult); err != nil {
-		payload, _ := json.Marshal(map[string]interface{}{"type": "done", "explanation": content, "dsl": nil})
-		fmt.Fprintf(w, "data: %s\n\n", payload)
-		w.Flush()
-		return nil
-	}
-
-	donePayload, _ := json.Marshal(map[string]interface{}{
-		"type":        "done",
-		"explanation": aiResult["explanation"],
-		"dsl":         aiResult["dsl"],
-	})
-	fmt.Fprintf(w, "data: %s\n\n", donePayload)
 	w.Flush()
 	return nil
 }

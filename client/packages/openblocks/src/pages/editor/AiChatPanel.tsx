@@ -8,6 +8,14 @@ import { useSelector } from "react-redux";
 import { currentApplication } from "redux/selectors/applicationSelector";
 import { SERVER_HOST } from "constants/apiConstants";
 import _ from "lodash";
+import {
+  changeValueAction,
+  multiChangeAction,
+  wrapActionExtraInfo,
+} from "openblocks-core";
+import { addMapChildAction } from "comps/generators/sameTypeMap";
+import { SimpleContainerComp } from "comps/comps/containerBase/simpleContainerComp";
+import { genRandomKey } from "comps/utils/idGenerator";
 
 const PanelOverlay = styled.div`
   position: fixed;
@@ -94,15 +102,6 @@ const AppliedBadge = styled.div`
   color: #52c41a;
 `;
 
-const UndoBtn = styled.button`
-  background: none;
-  border: none;
-  color: #999;
-  cursor: pointer;
-  font-size: 11px;
-  padding: 0 4px;
-  &:hover { color: #315efb; text-decoration: underline; }
-`;
 
 const InputArea = styled.div`
   display: flex;
@@ -148,7 +147,6 @@ const AuthMethodBtn = styled(Button)`
 interface ChatMessage {
   role: "user" | "assistant";
   content: string;
-  dsl?: any;
   applied?: boolean;
 }
 
@@ -318,73 +316,49 @@ export default function AiChatPanel({ visible, onClose }: AiChatPanelProps) {
     }
   };
 
-  const getCurrentDSL = useCallback(() => {
-    if (!editorState) return {};
-    try { return editorState.rootComp.toJsonValue(); } catch { return {}; }
-  }, [editorState]);
-
-  const applyDSL = useCallback((newDSL: any) => {
-    if (!editorState || !newDSL) return;
+  const executeAction = useCallback((action: string, params: any) => {
+    if (!editorState) return;
     try {
-      const currentValue = editorState.rootComp.toJsonValue();
-      const currentUI = currentValue?.ui;
-      const newUI = newDSL?.ui;
-      if (!newUI || !newUI.comp) return;
+      if (action === "add_component") {
+        const { comp_type, name, props, x, y, w, h } = params;
+        const uiComp = editorState.getUIComp().getComp();
+        if (!uiComp) return;
 
-      let mergedDSL: any;
+        const container = uiComp.realSimpleContainer() as SimpleContainerComp;
+        if (!container) return;
 
-      if (currentUI?.compType === "module") {
-        // Convert AI's page-format components into module container format.
-        // Module stores children in comp.container as indexed entries:
-        //   { "0": { layout: {...}, view: { compType, comp, name } }, "1": ... }
-        const existingContainer = currentUI?.comp?.container || {};
-        let nextIndex = Object.keys(existingContainer).length;
-        const newContainer: Record<string, any> = {};
+        const key = genRandomKey();
+        const compName = name || editorState.getNameGenerator().genItemName(comp_type);
+        const currentLayout = container.children.layout.getView();
 
-        const aiComps = newUI.comp || {};
-        const aiLayouts = newUI.layout || {};
-
-        for (const [name, comp] of Object.entries(aiComps) as [string, any][]) {
-          const aiLayout = aiLayouts[name] || { h: 5, w: 12, x: 0, y: nextIndex * 6 };
-          const idx = String(nextIndex);
-          newContainer[idx] = {
-            layout: { ...aiLayout, i: idx },
-            view: comp,
-          };
-          nextIndex++;
-        }
-
-        mergedDSL = {
-          ...currentValue,
-          ui: {
-            ...currentUI,
-            comp: {
-              ...currentUI.comp,
-              container: { ...existingContainer, ...newContainer },
-            },
-          },
+        const layoutItem = {
+          i: key,
+          x: x ?? 0,
+          y: y ?? Object.keys(currentLayout).length * 5,
+          w: w ?? 12,
+          h: h ?? 5,
         };
-      } else {
-        // Page-type app: merge components and layout directly
-        mergedDSL = {
-          ...currentValue,
-          ...newDSL,
-          ui: {
-            ...currentUI,
-            comp: { ...(currentUI?.comp || {}), ...(newUI.comp || {}) },
-            layout: { ...(currentUI?.layout || {}), ...(newUI.layout || {}) },
-          },
-        };
+
+        container.dispatch(
+          wrapActionExtraInfo(
+            multiChangeAction({
+              layout: changeValueAction({ ...currentLayout, [key]: layoutItem }, true),
+              items: addMapChildAction(key, {
+                compType: comp_type,
+                name: compName,
+                comp: props || undefined,
+              }),
+            }),
+            { compInfos: [{ compName, compType: comp_type, type: "add" }] }
+          )
+        );
       }
-
-      editorState.setComp((comp) => comp.reduce(comp.changeValueAction(mergedDSL)));
     } catch (e) {
-      message.error("Failed to apply changes");
-      console.error("Apply DSL error:", e);
+      console.error("Action execution error:", e);
     }
   }, [editorState]);
 
-  const dslSnapshotRef = useRef<any>(null);
+  const actionsRef = useRef<Array<{ action: string; params: any }>>([]);
 
   const sendMessage = async () => {
     const msg = input.trim();
@@ -392,11 +366,10 @@ export default function AiChatPanel({ visible, onClose }: AiChatPanelProps) {
     setInput("");
     setMessages((prev) => [...prev, { role: "user", content: msg }]);
     setLoading(true);
-
-    const currentDSL = getCurrentDSL();
-    dslSnapshotRef.current = currentDSL;
+    actionsRef.current = [];
 
     const assistantIdx = { current: -1 };
+    let actionCount = 0;
 
     try {
       const baseURL = `${_.trimEnd(SERVER_HOST, "/")}/api/ai/chat/stream`;
@@ -404,7 +377,7 @@ export default function AiChatPanel({ visible, onClose }: AiChatPanelProps) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({ message: msg, currentDSL }),
+        body: JSON.stringify({ message: msg }),
       });
 
       if (!resp.ok || !resp.body) {
@@ -413,7 +386,7 @@ export default function AiChatPanel({ visible, onClose }: AiChatPanelProps) {
 
       setMessages((prev) => {
         assistantIdx.current = prev.length;
-        return [...prev, { role: "assistant" as const, content: "", dsl: null }];
+        return [...prev, { role: "assistant" as const, content: "", applied: false }];
       });
 
       const reader = resp.body.getReader();
@@ -439,18 +412,31 @@ export default function AiChatPanel({ visible, onClose }: AiChatPanelProps) {
             setMessages((prev) =>
               prev.map((m, i) => (i === idx ? { ...m, content: m.content + event.data } : m))
             );
+          } else if (event.type === "action") {
+            executeAction(event.action, event.params);
+            actionsRef.current.push({ action: event.action, params: event.params });
+            actionCount++;
+            const idx = assistantIdx.current;
+            const label = event.params?.name || event.params?.comp_type || event.action;
+            setMessages((prev) =>
+              prev.map((m, i) =>
+                i === idx ? { ...m, content: m.content + `\n+ ${event.action}: ${label}` } : m
+              )
+            );
           } else if (event.type === "done") {
             const idx = assistantIdx.current;
             const explanation = event.explanation || "";
-            const dsl = event.dsl || null;
             setMessages((prev) =>
               prev.map((m, i) =>
-                i === idx ? { ...m, content: explanation || m.content || "Done.", dsl, applied: !!dsl } : m
+                i === idx
+                  ? {
+                      ...m,
+                      content: explanation || m.content || "Done.",
+                      applied: actionCount > 0,
+                    }
+                  : m
               )
             );
-            if (dsl) {
-              applyDSL(dsl);
-            }
           } else if (event.type === "error") {
             const idx = assistantIdx.current;
             setMessages((prev) =>
@@ -479,22 +465,6 @@ export default function AiChatPanel({ visible, onClose }: AiChatPanelProps) {
       }
     } finally {
       setLoading(false);
-    }
-  };
-
-  const handleUndo = (idx: number) => {
-    if (dslSnapshotRef.current) {
-      applyDSL(dslSnapshotRef.current);
-      setMessages((prev) => prev.map((m, i) => (i === idx ? { ...m, applied: false } : m)));
-      message.info("Changes reverted");
-    }
-  };
-
-  const handleReapply = (idx: number) => {
-    const msg = messages[idx];
-    if (msg?.dsl) {
-      applyDSL(msg.dsl);
-      setMessages((prev) => prev.map((m, i) => (i === idx ? { ...m, applied: true } : m)));
     }
   };
 
@@ -623,18 +593,10 @@ export default function AiChatPanel({ visible, onClose }: AiChatPanelProps) {
             <BubbleContent isUser={msg.role === "user"}>
               {msg.content || (loading && idx === messages.length - 1 ? "" : "...")}
             </BubbleContent>
-            {msg.role === "assistant" && msg.dsl && msg.applied && (
+            {msg.role === "assistant" && msg.applied && (
               <AppliedBadge>
                 <CheckCircleOutlined /> Applied to canvas
-                <UndoBtn onClick={() => handleUndo(idx)} title="Undo changes">
-                  <UndoOutlined /> undo
-                </UndoBtn>
               </AppliedBadge>
-            )}
-            {msg.role === "assistant" && msg.dsl && !msg.applied && (
-              <UndoBtn onClick={() => handleReapply(idx)} style={{ marginTop: 4, color: "#315efb" }}>
-                Re-apply to canvas
-              </UndoBtn>
             )}
           </MessageBubble>
         ))}
