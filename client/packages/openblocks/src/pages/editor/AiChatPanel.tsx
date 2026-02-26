@@ -16,6 +16,7 @@ import {
 import { addMapChildAction } from "comps/generators/sameTypeMap";
 import { SimpleContainerComp } from "comps/comps/containerBase/simpleContainerComp";
 import { genRandomKey } from "comps/utils/idGenerator";
+import html2canvas from "html2canvas";
 
 const PanelOverlay = styled.div`
   position: fixed;
@@ -360,6 +361,22 @@ export default function AiChatPanel({ visible, onClose }: AiChatPanelProps) {
 
   const actionsRef = useRef<Array<{ action: string; params: any }>>([]);
 
+  const captureCanvas = async (): Promise<string | null> => {
+    try {
+      const editorContainer = document.querySelector("[class*='EditorContainerWithViewMode']");
+      if (!editorContainer) return null;
+      const canvas = await html2canvas(editorContainer as HTMLElement, {
+        scale: 0.5,
+        useCORS: true,
+        logging: false,
+        backgroundColor: "#ffffff",
+      });
+      return canvas.toDataURL("image/jpeg", 0.6).split(",")[1];
+    } catch {
+      return null;
+    }
+  };
+
   const sendMessage = async () => {
     const msg = input.trim();
     if (!msg || loading) return;
@@ -372,12 +389,13 @@ export default function AiChatPanel({ visible, onClose }: AiChatPanelProps) {
     let actionCount = 0;
 
     try {
+      const screenshot = await captureCanvas();
       const baseURL = `${_.trimEnd(SERVER_HOST, "/")}/api/ai/chat/stream`;
       const resp = await fetch(baseURL, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({ message: msg }),
+        body: JSON.stringify({ message: msg, screenshot }),
       });
 
       if (!resp.ok || !resp.body) {

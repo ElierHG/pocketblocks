@@ -530,6 +530,11 @@ func (api *aiApi) chat(c echo.Context) error {
 
 const toolSystemPrompt = `You are an AI assistant in PocketBlocks, a low-code app builder. You modify the user's page by calling the provided tools. Do NOT output raw JSON or DSL — only use tool calls and text responses.
 
+You may receive a screenshot of the current canvas. Use it to understand the existing layout, component sizes, and spacing so you can place new components in the right positions and build visually appealing dashboards. When you see the screenshot, pay attention to:
+- Where existing components are positioned (avoid overlapping)
+- The overall visual balance and spacing
+- Component sizes relative to the 24-column grid
+
 Available component types (use these exact names for comp_type):
 text, input, textArea, password, numberInput, slider, rangeSlider, rating, switch, select, multiSelect, cascader, checkbox, radio, segmentedControl, date, dateRange, time, timeRange, file, button, link, dropdown, table, image, progress, progressCircle, divider, qrCode, form, container, tabbedContainer, modal, listView, chart, navigation, iframe, jsonExplorer, jsonEditor, tree, treeSelect, audio, video, drawer, carousel, toggleButton, signature, scanner
 
@@ -590,8 +595,8 @@ func (api *aiApi) chatStream(c echo.Context) error {
 
 	var body struct {
 		Message       string      `json:"message"`
-		CurrentDSL    interface{} `json:"currentDSL"`
 		ComponentList []string    `json:"componentList"`
+		Screenshot    string      `json:"screenshot"`
 	}
 	if err := c.Bind(&body); err != nil {
 		return errResp(c, 400, "Invalid request")
@@ -608,17 +613,27 @@ func (api *aiApi) chatStream(c echo.Context) error {
 
 	auth := api.getStoredAuth()
 	if auth.AuthMethod == "codex_chatgpt" {
-		return api.toolStreamViaResponses(c, userMessage, auth.AccountID)
+		return api.toolStreamViaResponses(c, userMessage, body.Screenshot, auth.AccountID)
 	}
-	return api.toolStreamViaCompletions(c, userMessage)
+	return api.toolStreamViaCompletions(c, userMessage, body.Screenshot)
 }
 
-func (api *aiApi) toolStreamViaCompletions(c echo.Context, userMessage string) error {
+func (api *aiApi) toolStreamViaCompletions(c echo.Context, userMessage string, screenshot string) error {
+	var userContent interface{}
+	if screenshot != "" {
+		userContent = []map[string]interface{}{
+			{"type": "text", "text": userMessage},
+			{"type": "image_url", "image_url": map[string]string{"url": "data:image/jpeg;base64," + screenshot, "detail": "low"}},
+		}
+	} else {
+		userContent = userMessage
+	}
+
 	openaiReq := map[string]interface{}{
 		"model": "gpt-4o",
 		"messages": []map[string]interface{}{
 			{"role": "system", "content": toolSystemPrompt},
-			{"role": "user", "content": userMessage},
+			{"role": "user", "content": userContent},
 		},
 		"tools":       completionsTools,
 		"temperature":  0.7,
@@ -730,16 +745,28 @@ func (api *aiApi) processCompletionsToolStream(c echo.Context, body io.Reader) e
 	return nil
 }
 
-func (api *aiApi) toolStreamViaResponses(c echo.Context, userMessage string, accountID string) error {
+func (api *aiApi) toolStreamViaResponses(c echo.Context, userMessage string, screenshot string, accountID string) error {
+	var inputContent interface{}
+	if screenshot != "" {
+		inputContent = []map[string]interface{}{
+			{"role": "user", "content": []map[string]interface{}{
+				{"type": "input_text", "text": userMessage},
+				{"type": "input_image", "image_url": "data:image/jpeg;base64," + screenshot},
+			}},
+		}
+	} else {
+		inputContent = []map[string]interface{}{
+			{"role": "user", "content": userMessage},
+		}
+	}
+
 	openaiReq := map[string]interface{}{
 		"model":        "gpt-5-codex-mini",
 		"instructions": toolSystemPrompt,
-		"input": []map[string]interface{}{
-			{"role": "user", "content": userMessage},
-		},
-		"tools":  responsesTools,
-		"stream": true,
-		"store":  false,
+		"input":        inputContent,
+		"tools":        responsesTools,
+		"stream":       true,
+		"store":        false,
 	}
 
 	reqBody, _ := json.Marshal(openaiReq)
