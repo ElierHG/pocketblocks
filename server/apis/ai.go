@@ -76,13 +76,17 @@ func (api *aiApi) getConfig(c echo.Context) error {
 	codexAvailable := api.codexAuthFileExists()
 	isAdm := api.ob.isAdmin(c)
 
+	model := "gpt-4o"
+	if auth.AuthMethod == "codex_chatgpt" {
+		model = "gpt-5-codex-mini"
+	}
 	return okResp(c, map[string]interface{}{
 		"hasApiKey":      auth.APIKey != "",
 		"hasCodexAuth":   auth.AccessToken != "",
 		"authMethod":     auth.AuthMethod,
 		"codexAvailable": codexAvailable,
 		"isAdmin":        isAdm,
-		"model":          "gpt-4o",
+		"model":          model,
 	})
 }
 
@@ -578,16 +582,18 @@ func (api *aiApi) chatViaCompletions(c echo.Context, userMessage string) error {
 
 func (api *aiApi) chatViaResponses(c echo.Context, userMessage string, accountID string) error {
 	openaiReq := map[string]interface{}{
-		"model":             "gpt-4o",
-		"instructions":      systemPrompt,
-		"input":             userMessage,
-		"temperature":       0.7,
-		"max_output_tokens": 16000,
+		"model":        "gpt-5-codex-mini",
+		"instructions": systemPrompt,
+		"input": []map[string]interface{}{
+			{"role": "user", "content": userMessage + "\n\nRespond in JSON format."},
+		},
 		"text": map[string]interface{}{
 			"format": map[string]interface{}{
 				"type": "json_object",
 			},
 		},
+		"stream": true,
+		"store":  false,
 	}
 
 	reqBody, err := json.Marshal(openaiReq)
@@ -596,11 +602,12 @@ func (api *aiApi) chatViaResponses(c echo.Context, userMessage string, accountID
 	}
 
 	resp, err := api.handleAuthFailureAndRetry(func(token string) (*http.Response, error) {
-		req, err := http.NewRequest("POST", "https://api.openai.com/v1/responses", bytes.NewReader(reqBody))
+		req, err := http.NewRequest("POST", "https://chatgpt.com/backend-api/codex/responses", bytes.NewReader(reqBody))
 		if err != nil {
 			return nil, err
 		}
 		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "text/event-stream")
 		req.Header.Set("Authorization", "Bearer "+token)
 		if accountID != "" {
 			req.Header.Set("ChatGPT-Account-ID", accountID)
@@ -625,30 +632,57 @@ func (api *aiApi) chatViaResponses(c echo.Context, userMessage string, accountID
 		return errResp(c, 502, "AI service error: "+respStr)
 	}
 
-	var responsesResp struct {
-		Output []struct {
-			Type    string `json:"type"`
-			Content []struct {
-				Type string `json:"type"`
-				Text string `json:"text"`
-			} `json:"content"`
-		} `json:"output"`
-	}
-	if err := json.Unmarshal(respBody, &responsesResp); err != nil {
-		return errResp(c, 500, "Failed to parse AI response")
+	// Parse SSE stream to extract the output text
+	content := extractTextFromSSE(string(respBody))
+	if content == "" {
+		return errResp(c, 500, "AI returned no response")
 	}
 
-	for _, output := range responsesResp.Output {
-		if output.Type == "message" {
-			for _, content := range output.Content {
-				if content.Type == "output_text" && content.Text != "" {
-					return api.parseAndReturnAIContent(c, content.Text)
+	return api.parseAndReturnAIContent(c, content)
+}
+
+// extractTextFromSSE parses a Responses API SSE stream and concatenates all
+// output_text delta fragments into the complete text.
+func extractTextFromSSE(sseData string) string {
+	var result strings.Builder
+	for _, line := range strings.Split(sseData, "\n") {
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		data := strings.TrimPrefix(line, "data: ")
+		if data == "[DONE]" {
+			break
+		}
+		var event struct {
+			Type string `json:"type"`
+			// For response.output_text.delta
+			Delta string `json:"delta"`
+			// For response.output_item.done with full content
+			Item struct {
+				Type    string `json:"type"`
+				Content []struct {
+					Type string `json:"type"`
+					Text string `json:"text"`
+				} `json:"content"`
+			} `json:"item"`
+		}
+		if err := json.Unmarshal([]byte(data), &event); err != nil {
+			continue
+		}
+		switch event.Type {
+		case "response.output_text.delta":
+			result.WriteString(event.Delta)
+		case "response.output_item.done":
+			if event.Item.Type == "message" {
+				for _, c := range event.Item.Content {
+					if c.Type == "output_text" && c.Text != "" {
+						return c.Text
+					}
 				}
 			}
 		}
 	}
-
-	return errResp(c, 500, "AI returned no response")
+	return result.String()
 }
 
 func (api *aiApi) parseAndReturnAIContent(c echo.Context, content string) error {
