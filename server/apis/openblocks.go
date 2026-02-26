@@ -15,7 +15,6 @@ import (
 	"github.com/pedrozadotdev/pocketblocks/server/utils"
 	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase"
-	"github.com/pocketbase/pocketbase/apis"
 	pbModels "github.com/pocketbase/pocketbase/models"
 	"github.com/pocketbase/pocketbase/tokens"
 )
@@ -818,11 +817,13 @@ func (api *openblocksApi) listApps(c echo.Context, onlyRecycled bool, folderId s
 		}
 	}
 
-	info := apis.RequestInfo(c)
-	if info.Admin == nil && info.AuthRecord != nil {
+	admin := api.getAdmin(c)
+	authRecord := api.getAuthRecord(c)
+
+	if admin == nil && authRecord != nil {
 		groups, _ := api.app.Dao().FindRecordsByFilter(
 			"groups",
-			"users.id ?= \""+info.AuthRecord.Id+"\"",
+			"users.id ?= \""+authRecord.Id+"\"",
 			"-created", 500, 0,
 		)
 		groupIds := []string{}
@@ -837,13 +838,13 @@ func (api *openblocksApi) listApps(c echo.Context, onlyRecycled bool, folderId s
 		if len(groupIds) > 0 {
 			filterExpr = dbx.Or(
 				filterExpr,
-				dbx.Like("users", info.AuthRecord.Id),
+				dbx.Like("users", authRecord.Id),
 				dbx.OrLike("groups", groupIds...),
 			)
 		} else {
 			filterExpr = dbx.Or(
 				filterExpr,
-				dbx.Like("users", info.AuthRecord.Id),
+				dbx.Like("users", authRecord.Id),
 			)
 		}
 		query = query.AndWhere(filterExpr)
@@ -1006,13 +1007,11 @@ func (api *openblocksApi) applicationView(c echo.Context) error {
 		return errResp(c, 404, "Application not found")
 	}
 
-	info := apis.RequestInfo(c)
-	if info.Admin == nil {
-		if info.AuthRecord == nil {
-			if !app.Public {
-				return errResp(c, 401, "Unauthorized")
-			}
-		}
+	admin := api.getAdmin(c)
+	authRecord := api.getAuthRecord(c)
+
+	if admin == nil && authRecord == nil && !app.Public {
+		return errResp(c, 401, "Unauthorized")
 	}
 
 	resp, err := api.createFullAppResponse(c, app)
