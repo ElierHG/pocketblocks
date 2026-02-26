@@ -205,12 +205,13 @@ export default function AiChatPanel({ visible, onClose }: AiChatPanelProps) {
   const CODEX_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
   const DEVICE_CODE_URL = "https://auth0.openai.com/oauth/device/code";
   const TOKEN_URL = "https://auth0.openai.com/oauth/token";
+  const CODEX_OAUTH_SCOPE = "openid profile email offline_access model.request";
 
   const startDeviceCode = async () => {
     try {
       const params = new URLSearchParams();
       params.set("client_id", CODEX_CLIENT_ID);
-      params.set("scope", "openid profile email offline_access");
+      params.set("scope", CODEX_OAUTH_SCOPE);
       params.set("audience", "https://api.openai.com/v1");
 
       const resp = await fetch(DEVICE_CODE_URL, {

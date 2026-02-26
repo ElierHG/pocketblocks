@@ -22,6 +22,7 @@ const (
 	codexTokenEndpoint        = "https://auth0.openai.com/oauth/token"
 	codexDeviceVerificationUI = "https://auth.openai.com/codex/device"
 	codexRefreshTokenEndpoint = "https://auth0.openai.com/oauth/token"
+	codexOAuthScope           = "openid profile email offline_access model.request"
 )
 
 type aiApi struct {
@@ -258,7 +259,7 @@ func (api *aiApi) refreshAccessToken(refreshToken string) (string, string, error
 	data.Set("grant_type", "refresh_token")
 	data.Set("client_id", codexClientID)
 	data.Set("refresh_token", refreshToken)
-	data.Set("scope", "openid profile email")
+	data.Set("scope", codexOAuthScope)
 
 	resp, err := http.PostForm(codexRefreshTokenEndpoint, data)
 	if err != nil {
@@ -317,7 +318,9 @@ func (api *aiApi) handleAuthFailureAndRetry(reqFn func(token string) (*http.Resp
 		return nil, err
 	}
 
-	if resp.StatusCode == 401 && auth.AuthMethod == "codex_chatgpt" && auth.RefreshToken != "" {
+	if (resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden) &&
+		auth.AuthMethod == "codex_chatgpt" &&
+		auth.RefreshToken != "" {
 		resp.Body.Close()
 		newAccess, newRefresh, err := api.refreshAccessToken(auth.RefreshToken)
 		if err != nil {
@@ -330,6 +333,39 @@ func (api *aiApi) handleAuthFailureAndRetry(reqFn func(token string) (*http.Resp
 	}
 
 	return resp, nil
+}
+
+func mapOpenAIError(statusCode int, respBody []byte) string {
+	defaultMessage := "AI service error"
+	if statusCode == http.StatusUnauthorized {
+		defaultMessage = "AI authentication failed. Reconnect AI in Settings or update your API key."
+	}
+
+	trimmedBody := strings.TrimSpace(string(respBody))
+	if trimmedBody == "" {
+		return defaultMessage
+	}
+
+	var providerErr struct {
+		Error struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(respBody, &providerErr); err == nil && providerErr.Error.Message != "" {
+		msg := providerErr.Error.Message
+		msgLower := strings.ToLower(msg)
+
+		if strings.Contains(msgLower, "missing scopes: model.request") ||
+			(strings.Contains(msgLower, "insufficient permissions") && strings.Contains(msgLower, "model.request")) {
+			return "AI token is missing the required model.request scope. Reconnect AI in Settings (Disconnect, then Sign in with ChatGPT) or use an API key."
+		}
+		if statusCode == http.StatusUnauthorized {
+			return "AI authentication failed. Reconnect AI in Settings or update your API key."
+		}
+		return "AI service error: " + msg
+	}
+
+	return "AI service error: " + trimmedBody
 }
 
 // --- Chat endpoint ---
@@ -479,8 +515,8 @@ func (api *aiApi) chat(c echo.Context) error {
 			{"role": "system", "content": systemPrompt},
 			{"role": "user", "content": userMessage},
 		},
-		"temperature":    0.7,
-		"max_tokens":     16000,
+		"temperature":     0.7,
+		"max_tokens":      16000,
 		"response_format": map[string]interface{}{"type": "json_object"},
 	}
 
@@ -516,7 +552,7 @@ func (api *aiApi) chat(c echo.Context) error {
 		// Return 502 instead of forwarding OpenAI's status code directly,
 		// because a 401 from OpenAI would trigger the client's auth interceptor
 		// and log the user out.
-		return errResp(c, 502, "AI service error: "+string(respBody))
+		return errResp(c, 502, mapOpenAIError(resp.StatusCode, respBody))
 	}
 
 	var openaiResp struct {
