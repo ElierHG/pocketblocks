@@ -2,6 +2,7 @@ package apis
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -61,6 +62,7 @@ type storedAuth struct {
 	APIKey       string `json:"api_key"`
 	AccessToken  string `json:"access_token"`
 	RefreshToken string `json:"refresh_token"`
+	AccountID    string `json:"account_id"`
 }
 
 // --- Config endpoint ---
@@ -140,6 +142,7 @@ func (api *aiApi) saveTokens(c echo.Context) error {
 		AuthMethod:   "codex_chatgpt",
 		AccessToken:  body.AccessToken,
 		RefreshToken: body.RefreshToken,
+		AccountID:    extractAccountIDFromJWT(body.AccessToken),
 	}
 	if err := api.saveAuth(auth); err != nil {
 		return errResp(c, 500, "Failed to store tokens")
@@ -172,10 +175,15 @@ func (api *aiApi) importCodexAuth(c echo.Context) error {
 	}
 
 	if codexAuth.Tokens != nil && codexAuth.Tokens.AccessToken != "" {
+		accountID := codexAuth.Tokens.AccountID
+		if accountID == "" {
+			accountID = extractAccountIDFromJWT(codexAuth.Tokens.AccessToken)
+		}
 		auth := storedAuth{
 			AuthMethod:   "codex_chatgpt",
 			AccessToken:  codexAuth.Tokens.AccessToken,
 			RefreshToken: codexAuth.Tokens.RefreshToken,
+			AccountID:    accountID,
 		}
 		if err := api.saveAuth(auth); err != nil {
 			return errResp(c, 500, "Failed to store credentials")
@@ -218,6 +226,33 @@ func (api *aiApi) getStoredAPIKeyLegacy() string {
 		return ""
 	}
 	return key
+}
+
+// extractAccountIDFromJWT parses the chatgpt_account_id from a JWT access
+// token's payload. The Codex CLI sends this as the ChatGPT-Account-ID header
+// which is required for ChatGPT-authenticated API access.
+func extractAccountIDFromJWT(token string) string {
+	parts := strings.SplitN(token, ".", 3)
+	if len(parts) < 2 {
+		return ""
+	}
+	payload := parts[1]
+	if m := len(payload) % 4; m != 0 {
+		payload += strings.Repeat("=", 4-m)
+	}
+	data, err := base64.URLEncoding.DecodeString(payload)
+	if err != nil {
+		return ""
+	}
+	var claims struct {
+		Auth struct {
+			AccountID string `json:"chatgpt_account_id"`
+		} `json:"https://api.openai.com/auth"`
+	}
+	if err := json.Unmarshal(data, &claims); err != nil {
+		return ""
+	}
+	return claims.Auth.AccountID
 }
 
 func (api *aiApi) codexAuthFileExists() bool {
@@ -475,7 +510,7 @@ func (api *aiApi) chat(c echo.Context) error {
 
 	auth := api.getStoredAuth()
 	if auth.AuthMethod == "codex_chatgpt" {
-		return api.chatViaResponses(c, userMessage)
+		return api.chatViaResponses(c, userMessage, auth.AccountID)
 	}
 	return api.chatViaCompletions(c, userMessage)
 }
@@ -541,7 +576,7 @@ func (api *aiApi) chatViaCompletions(c echo.Context, userMessage string) error {
 	return api.parseAndReturnAIContent(c, openaiResp.Choices[0].Message.Content)
 }
 
-func (api *aiApi) chatViaResponses(c echo.Context, userMessage string) error {
+func (api *aiApi) chatViaResponses(c echo.Context, userMessage string, accountID string) error {
 	openaiReq := map[string]interface{}{
 		"model":             "gpt-4o",
 		"instructions":      systemPrompt,
@@ -567,6 +602,9 @@ func (api *aiApi) chatViaResponses(c echo.Context, userMessage string) error {
 		}
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Authorization", "Bearer "+token)
+		if accountID != "" {
+			req.Header.Set("ChatGPT-Account-ID", accountID)
+		}
 		return (&http.Client{}).Do(req)
 	})
 	if err != nil {
