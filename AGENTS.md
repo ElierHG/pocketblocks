@@ -32,11 +32,19 @@ The admin panel is at `http://localhost:8090/_/`. The app UI is at `http://local
 - Auth uses cookie-based JWT tokens (`pb_auth` cookie). The server validates tokens directly from cookies via `server/apis/openblocks.go` helper methods.
 - Only admin users (created via `POST /api/admins`) have `orgDev=true` and can create apps.
 
+### Key build prerequisite
+
+The Go server embeds the client build via `//go:embed all:dist` in `server/ui/embed.go`. **You must build the client first** (`cd client && yarn build`) before `go vet`, `go test`, or `go run` will work — otherwise you get `pattern all:dist: no matching files found`.
+
 ### Lint
 
-- **Server**: `cd server && go vet ./...`
+- **Server**: `go vet ./...` (from workspace root — `go.mod` is at `/workspace`, not `server/`)
 
 ### Tests
 
 - **Client**: `cd client && yarn test` — 62/66 suites pass; 4 pre-existing failures
-- **Server**: `cd server && go test ./...`
+- **Server**: `go test ./...` (from workspace root)
+
+### Login API
+
+The login endpoint is `POST /api/auth/form/login` (not `/api/auth/login`). The request body uses `{"loginId":"...","password":"..."}`.
