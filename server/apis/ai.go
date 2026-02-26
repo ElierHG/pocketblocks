@@ -473,14 +473,22 @@ func (api *aiApi) chat(c echo.Context) error {
 		userMessage = fmt.Sprintf("Current page DSL:\n```json\n%s\n```\n\nUser request: %s", currentDSLJSON, body.Message)
 	}
 
+	auth := api.getStoredAuth()
+	if auth.AuthMethod == "codex_chatgpt" {
+		return api.chatViaResponses(c, userMessage)
+	}
+	return api.chatViaCompletions(c, userMessage)
+}
+
+func (api *aiApi) chatViaCompletions(c echo.Context, userMessage string) error {
 	openaiReq := map[string]interface{}{
 		"model": "gpt-4o",
 		"messages": []map[string]interface{}{
 			{"role": "system", "content": systemPrompt},
 			{"role": "user", "content": userMessage},
 		},
-		"temperature":    0.7,
-		"max_tokens":     16000,
+		"temperature":     0.7,
+		"max_tokens":      16000,
 		"response_format": map[string]interface{}{"type": "json_object"},
 	}
 
@@ -495,11 +503,7 @@ func (api *aiApi) chat(c echo.Context) error {
 			return nil, err
 		}
 		req.Header.Set("Content-Type", "application/json")
-		if strings.HasPrefix(token, "sk-") {
-			req.Header.Set("Authorization", "Bearer "+token)
-		} else {
-			req.Header.Set("Authorization", "Bearer "+token)
-		}
+		req.Header.Set("Authorization", "Bearer "+token)
 		return (&http.Client{}).Do(req)
 	})
 	if err != nil {
@@ -513,9 +517,9 @@ func (api *aiApi) chat(c echo.Context) error {
 	}
 
 	if resp.StatusCode != 200 {
-		// Return 502 instead of forwarding OpenAI's status code directly,
-		// because a 401 from OpenAI would trigger the client's auth interceptor
-		// and log the user out.
+		if strings.Contains(string(respBody), "model.request") {
+			return errResp(c, 502, "Your OpenAI API key lacks the 'model.request' scope. Create a new key with full permissions at https://platform.openai.com/api-keys, or use 'Sign in with ChatGPT' instead.")
+		}
 		return errResp(c, 502, "AI service error: "+string(respBody))
 	}
 
@@ -534,8 +538,82 @@ func (api *aiApi) chat(c echo.Context) error {
 		return errResp(c, 500, "AI returned no response")
 	}
 
-	content := openaiResp.Choices[0].Message.Content
+	return api.parseAndReturnAIContent(c, openaiResp.Choices[0].Message.Content)
+}
 
+func (api *aiApi) chatViaResponses(c echo.Context, userMessage string) error {
+	openaiReq := map[string]interface{}{
+		"model":             "gpt-4o",
+		"instructions":      systemPrompt,
+		"input":             userMessage,
+		"temperature":       0.7,
+		"max_output_tokens": 16000,
+		"text": map[string]interface{}{
+			"format": map[string]interface{}{
+				"type": "json_object",
+			},
+		},
+	}
+
+	reqBody, err := json.Marshal(openaiReq)
+	if err != nil {
+		return errResp(c, 500, "Failed to build AI request")
+	}
+
+	resp, err := api.handleAuthFailureAndRetry(func(token string) (*http.Response, error) {
+		req, err := http.NewRequest("POST", "https://api.openai.com/v1/responses", bytes.NewReader(reqBody))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+token)
+		return (&http.Client{}).Do(req)
+	})
+	if err != nil {
+		return errResp(c, 500, "AI request failed: "+err.Error())
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return errResp(c, 500, "Failed to read AI response")
+	}
+
+	if resp.StatusCode != 200 {
+		respStr := string(respBody)
+		if strings.Contains(respStr, "api.responses.write") || strings.Contains(respStr, "model.request") || strings.Contains(respStr, "insufficient permissions") {
+			return errResp(c, 502, "Your ChatGPT sign-in token doesn't have API access. Please use an API key instead: go to Settings > Enter API Key, using a key from https://platform.openai.com/api-keys")
+		}
+		return errResp(c, 502, "AI service error: "+respStr)
+	}
+
+	var responsesResp struct {
+		Output []struct {
+			Type    string `json:"type"`
+			Content []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"output"`
+	}
+	if err := json.Unmarshal(respBody, &responsesResp); err != nil {
+		return errResp(c, 500, "Failed to parse AI response")
+	}
+
+	for _, output := range responsesResp.Output {
+		if output.Type == "message" {
+			for _, content := range output.Content {
+				if content.Type == "output_text" && content.Text != "" {
+					return api.parseAndReturnAIContent(c, content.Text)
+				}
+			}
+		}
+	}
+
+	return errResp(c, 500, "AI returned no response")
+}
+
+func (api *aiApi) parseAndReturnAIContent(c echo.Context, content string) error {
 	var aiResult map[string]interface{}
 	if err := json.Unmarshal([]byte(content), &aiResult); err != nil {
 		return okResp(c, map[string]interface{}{
@@ -544,6 +622,5 @@ func (api *aiApi) chat(c echo.Context) error {
 			"raw":         content,
 		})
 	}
-
 	return okResp(c, aiResult)
 }
