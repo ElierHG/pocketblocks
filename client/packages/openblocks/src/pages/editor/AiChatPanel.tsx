@@ -329,18 +329,54 @@ export default function AiChatPanel({ visible, onClose }: AiChatPanelProps) {
       const currentValue = editorState.rootComp.toJsonValue();
       const currentUI = currentValue?.ui;
       const newUI = newDSL?.ui;
+      if (!newUI || !newUI.comp) return;
 
-      if (!newUI) return;
+      let mergedDSL: any;
 
-      // Merge AI components into the existing root structure, preserving the
-      // original compType (module vs page) to avoid blanking the editor.
-      const mergedUI = {
-        ...currentUI,
-        comp: { ...(currentUI?.comp || {}), ...(newUI.comp || {}) },
-        layout: { ...(currentUI?.layout || {}), ...(newUI.layout || {}) },
-      };
+      if (currentUI?.compType === "module") {
+        // Convert AI's page-format components into module container format.
+        // Module stores children in comp.container as indexed entries:
+        //   { "0": { layout: {...}, view: { compType, comp, name } }, "1": ... }
+        const existingContainer = currentUI?.comp?.container || {};
+        let nextIndex = Object.keys(existingContainer).length;
+        const newContainer: Record<string, any> = {};
 
-      const mergedDSL = { ...currentValue, ...newDSL, ui: mergedUI };
+        const aiComps = newUI.comp || {};
+        const aiLayouts = newUI.layout || {};
+
+        for (const [name, comp] of Object.entries(aiComps) as [string, any][]) {
+          const aiLayout = aiLayouts[name] || { h: 5, w: 12, x: 0, y: nextIndex * 6 };
+          const idx = String(nextIndex);
+          newContainer[idx] = {
+            layout: { ...aiLayout, i: idx },
+            view: comp,
+          };
+          nextIndex++;
+        }
+
+        mergedDSL = {
+          ...currentValue,
+          ui: {
+            ...currentUI,
+            comp: {
+              ...currentUI.comp,
+              container: { ...existingContainer, ...newContainer },
+            },
+          },
+        };
+      } else {
+        // Page-type app: merge components and layout directly
+        mergedDSL = {
+          ...currentValue,
+          ...newDSL,
+          ui: {
+            ...currentUI,
+            comp: { ...(currentUI?.comp || {}), ...(newUI.comp || {}) },
+            layout: { ...(currentUI?.layout || {}), ...(newUI.layout || {}) },
+          },
+        };
+      }
+
       editorState.setComp((comp) => comp.reduce(comp.changeValueAction(mergedDSL)));
     } catch (e) {
       message.error("Failed to apply changes");
