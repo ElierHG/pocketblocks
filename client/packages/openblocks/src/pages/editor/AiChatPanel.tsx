@@ -359,7 +359,7 @@ export default function AiChatPanel({ visible, onClose }: AiChatPanelProps) {
     }
   }, [editorState]);
 
-  const actionsRef = useRef<Array<{ action: string; params: any }>>([]);
+  const MAX_REVIEW_ROUNDS = 2;
 
   const captureCanvas = async (): Promise<string | null> => {
     try {
@@ -377,92 +377,129 @@ export default function AiChatPanel({ visible, onClose }: AiChatPanelProps) {
     }
   };
 
+  const streamOnce = async (
+    msg: string,
+    screenshot: string | null,
+    assistantIdx: { current: number }
+  ): Promise<{ actionCount: number; explanation: string; error?: string }> => {
+    const baseURL = `${_.trimEnd(SERVER_HOST, "/")}/api/ai/chat/stream`;
+    const resp = await fetch(baseURL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ message: msg, screenshot }),
+    });
+    if (!resp.ok || !resp.body) throw new Error("Stream request failed");
+
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let actionCount = 0;
+    let explanation = "";
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+
+      for (const line of lines) {
+        if (!line.startsWith("data: ")) continue;
+        let event: any;
+        try { event = JSON.parse(line.slice(6)); } catch { continue; }
+
+        if (event.type === "delta") {
+          const idx = assistantIdx.current;
+          setMessages((prev) =>
+            prev.map((m, i) => (i === idx ? { ...m, content: m.content + event.data } : m))
+          );
+        } else if (event.type === "action") {
+          executeAction(event.action, event.params);
+          actionCount++;
+          const idx = assistantIdx.current;
+          const label = event.params?.name || event.params?.comp_type || "";
+          setMessages((prev) =>
+            prev.map((m, i) =>
+              i === idx ? { ...m, content: m.content + `\n+ ${event.action}: ${label}` } : m
+            )
+          );
+        } else if (event.type === "done") {
+          explanation = event.explanation || "";
+        } else if (event.type === "error") {
+          return { actionCount, explanation, error: event.data };
+        }
+      }
+    }
+    return { actionCount, explanation };
+  };
+
   const sendMessage = async () => {
     const msg = input.trim();
     if (!msg || loading) return;
     setInput("");
     setMessages((prev) => [...prev, { role: "user", content: msg }]);
     setLoading(true);
-    actionsRef.current = [];
 
     const assistantIdx = { current: -1 };
-    let actionCount = 0;
 
     try {
       const screenshot = await captureCanvas();
-      const baseURL = `${_.trimEnd(SERVER_HOST, "/")}/api/ai/chat/stream`;
-      const resp = await fetch(baseURL, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({ message: msg, screenshot }),
-      });
-
-      if (!resp.ok || !resp.body) {
-        throw new Error("Stream request failed");
-      }
 
       setMessages((prev) => {
         assistantIdx.current = prev.length;
         return [...prev, { role: "assistant" as const, content: "", applied: false }];
       });
 
-      const reader = resp.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
+      const result = await streamOnce(msg, screenshot, assistantIdx);
 
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
+      if (result.error) {
+        const idx = assistantIdx.current;
+        setMessages((prev) =>
+          prev.map((m, i) => (i === idx ? { ...m, content: `Error: ${result.error}` } : m))
+        );
+        setLoading(false);
+        return;
+      }
 
-        const lines = buffer.split("\n");
-        buffer = lines.pop() || "";
+      const idx = assistantIdx.current;
+      setMessages((prev) =>
+        prev.map((m, i) =>
+          i === idx
+            ? { ...m, content: result.explanation || m.content || "Done.", applied: result.actionCount > 0 }
+            : m
+        )
+      );
 
-        for (const line of lines) {
-          if (!line.startsWith("data: ")) continue;
-          const raw = line.slice(6);
-          let event: any;
-          try { event = JSON.parse(raw); } catch { continue; }
+      if (result.actionCount > 0) {
+        for (let round = 0; round < MAX_REVIEW_ROUNDS; round++) {
+          await new Promise((r) => setTimeout(r, 800));
+          const reviewScreenshot = await captureCanvas();
+          if (!reviewScreenshot) break;
 
-          if (event.type === "delta") {
-            const idx = assistantIdx.current;
-            setMessages((prev) =>
-              prev.map((m, i) => (i === idx ? { ...m, content: m.content + event.data } : m))
-            );
-          } else if (event.type === "action") {
-            executeAction(event.action, event.params);
-            actionsRef.current.push({ action: event.action, params: event.params });
-            actionCount++;
-            const idx = assistantIdx.current;
-            const label = event.params?.name || event.params?.comp_type || event.action;
-            setMessages((prev) =>
-              prev.map((m, i) =>
-                i === idx ? { ...m, content: m.content + `\n+ ${event.action}: ${label}` } : m
-              )
-            );
-          } else if (event.type === "done") {
-            const idx = assistantIdx.current;
-            const explanation = event.explanation || "";
-            setMessages((prev) =>
-              prev.map((m, i) =>
-                i === idx
-                  ? {
-                      ...m,
-                      content: explanation || m.content || "Done.",
-                      applied: actionCount > 0,
-                    }
-                  : m
-              )
-            );
-          } else if (event.type === "error") {
-            const idx = assistantIdx.current;
-            setMessages((prev) =>
-              prev.map((m, i) =>
-                i === idx ? { ...m, content: `Error: ${event.data}` } : m
-              )
-            );
-          }
+          setMessages((prev) => {
+            assistantIdx.current = prev.length;
+            return [...prev, { role: "assistant" as const, content: "Reviewing layout..." }];
+          });
+
+          const rr = await streamOnce(
+            "REVIEW: Screenshot shows the canvas after your changes. Check sizing, spacing, overlap. Fix issues with modify_page or confirm it looks good.",
+            reviewScreenshot,
+            assistantIdx
+          );
+
+          if (rr.error) break;
+
+          const rIdx = assistantIdx.current;
+          setMessages((prev) =>
+            prev.map((m, i) =>
+              i === rIdx
+                ? { ...m, content: rr.explanation || m.content || "Looks good!", applied: rr.actionCount > 0 }
+                : m
+            )
+          );
+
+          if (rr.actionCount === 0) break;
         }
       }
     } catch (e: any) {
@@ -470,15 +507,12 @@ export default function AiChatPanel({ visible, onClose }: AiChatPanelProps) {
         const idx = assistantIdx.current;
         setMessages((prev) =>
           prev.map((m, i) =>
-            i === idx && !m.content
-              ? { ...m, content: `Error: ${e?.message || "AI request failed"}` }
-              : m
+            i === idx && !m.content ? { ...m, content: `Error: ${e?.message || "Failed"}` } : m
           )
         );
       } else {
         setMessages((prev) => [...prev, {
-          role: "assistant" as const,
-          content: `Error: ${e?.message || "AI request failed"}`,
+          role: "assistant" as const, content: `Error: ${e?.message || "Failed"}`,
         }]);
       }
     } finally {

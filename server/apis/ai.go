@@ -530,10 +530,18 @@ func (api *aiApi) chat(c echo.Context) error {
 
 const toolSystemPrompt = `You are an AI assistant in PocketBlocks, a low-code app builder. You modify the user's page by calling the provided tools. Do NOT output raw JSON or DSL — only use tool calls and text responses.
 
-You may receive a screenshot of the current canvas. Use it to understand the existing layout, component sizes, and spacing so you can place new components in the right positions and build visually appealing dashboards. When you see the screenshot, pay attention to:
-- Where existing components are positioned (avoid overlapping)
-- The overall visual balance and spacing
-- Component sizes relative to the 24-column grid
+You will receive a screenshot of the current canvas. Use it to:
+- See where existing components are positioned (avoid overlapping)
+- Judge visual balance, spacing, and proportions
+- Make components appropriately sized for their content
+- Build clean, professional-looking layouts
+
+After you make changes, you will receive a NEW screenshot showing the result. Use this to:
+- Verify components rendered correctly and are visible
+- Check sizing — make things wider/taller if they look cramped
+- Ensure nothing overlaps or is cut off
+- Improve visual balance if needed
+If the layout message says "REVIEW", evaluate the screenshot and either make adjustments or respond with just text (no tool calls) if it looks good.
 
 Available component types (use these exact names for comp_type):
 text, input, textArea, password, numberInput, slider, rangeSlider, rating, switch, select, multiSelect, cascader, checkbox, radio, segmentedControl, date, dateRange, time, timeRange, file, button, link, dropdown, table, image, progress, progressCircle, divider, qrCode, form, container, tabbedContainer, modal, listView, chart, navigation, iframe, jsonExplorer, jsonEditor, tree, treeSelect, audio, video, drawer, carousel, toggleButton, signature, scanner
@@ -550,9 +558,10 @@ Component properties (pass as JSON in the props field):
 Layout uses a 24-column grid. Position with x (0-23), y (row), w (width, 1-24), h (height in rows).
 
 Rules:
-1. Always use add_component to add new components.
+1. Always use modify_page to add new components.
 2. Give each component a unique, descriptive name.
-3. After all tool calls, provide a brief text summary of what you did.`
+3. After all tool calls, provide a brief text summary of what you did.
+4. When reviewing a screenshot (REVIEW message), if the design looks good just respond with text saying it looks good. If you see issues, call modify_page to fix them.`
 
 var modifyPageParams = map[string]interface{}{
 	"type": "object",
