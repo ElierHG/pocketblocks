@@ -66,18 +66,20 @@ type storedAuth struct {
 // --- Config endpoint ---
 
 func (api *aiApi) getConfig(c echo.Context) error {
-	if !api.ob.isAdmin(c) {
+	if !api.ob.isLoggedIn(c) {
 		return errResp(c, 401, "Unauthorized")
 	}
 
 	auth := api.getStoredAuth()
 	codexAvailable := api.codexAuthFileExists()
+	isAdm := api.ob.isAdmin(c)
 
 	return okResp(c, map[string]interface{}{
 		"hasApiKey":      auth.APIKey != "",
 		"hasCodexAuth":   auth.AccessToken != "",
 		"authMethod":     auth.AuthMethod,
 		"codexAvailable": codexAvailable,
+		"isAdmin":        isAdm,
 		"model":          "gpt-4o",
 	})
 }

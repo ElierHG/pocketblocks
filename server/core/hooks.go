@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/pedrozadotdev/pocketblocks/server/daos"
@@ -24,7 +25,12 @@ import (
 func uiCacheControl() echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c echo.Context) error {
-			c.Response().Header().Set("Cache-Control", "max-age=1209600, stale-while-revalidate=86400")
+			path := c.Request().URL.Path
+			if strings.HasSuffix(path, ".html") || path == "/" || !strings.Contains(path, ".") {
+				c.Response().Header().Set("Cache-Control", "no-cache, must-revalidate")
+			} else {
+				c.Response().Header().Set("Cache-Control", "max-age=1209600, stale-while-revalidate=86400")
+			}
 			return next(c)
 		}
 	}
