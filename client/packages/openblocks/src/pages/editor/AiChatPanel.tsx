@@ -1,11 +1,13 @@
 import React, { useState, useRef, useEffect, useContext, useCallback } from "react";
 import styled from "styled-components";
 import { Button, Input, Spin, message, Divider } from "antd";
-import { CloseOutlined, SendOutlined, RobotOutlined, SettingOutlined, KeyOutlined, LinkOutlined } from "@ant-design/icons";
+import { CloseOutlined, SendOutlined, RobotOutlined, SettingOutlined, KeyOutlined, LinkOutlined, CheckCircleOutlined, UndoOutlined } from "@ant-design/icons";
 import Api from "api/api";
 import { EditorContext } from "comps/editorState";
 import { useSelector } from "react-redux";
 import { currentApplication } from "redux/selectors/applicationSelector";
+import { SERVER_HOST } from "constants/apiConstants";
+import _ from "lodash";
 
 const PanelOverlay = styled.div`
   position: fixed;
@@ -83,9 +85,23 @@ const BubbleContent = styled.div<{ isUser: boolean }>`
   white-space: pre-wrap;
 `;
 
-const ApplyButton = styled(Button)`
-  margin-top: 6px;
-  font-size: 12px;
+const AppliedBadge = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 4px;
+  font-size: 11px;
+  color: #52c41a;
+`;
+
+const UndoBtn = styled.button`
+  background: none;
+  border: none;
+  color: #999;
+  cursor: pointer;
+  font-size: 11px;
+  padding: 0 4px;
+  &:hover { color: #315efb; text-decoration: underline; }
 `;
 
 const InputArea = styled.div`
@@ -311,12 +327,13 @@ export default function AiChatPanel({ visible, onClose }: AiChatPanelProps) {
     if (!editorState || !newDSL) return;
     try {
       editorState.setComp((comp) => comp.reduce(comp.changeValueAction(newDSL)));
-      message.success("AI changes applied to canvas");
     } catch (e) {
-      message.error("Failed to apply DSL changes");
+      message.error("Failed to apply changes");
       console.error("Apply DSL error:", e);
     }
   }, [editorState]);
+
+  const dslSnapshotRef = useRef<any>(null);
 
   const sendMessage = async () => {
     const msg = input.trim();
@@ -324,26 +341,105 @@ export default function AiChatPanel({ visible, onClose }: AiChatPanelProps) {
     setInput("");
     setMessages((prev) => [...prev, { role: "user", content: msg }]);
     setLoading(true);
+
+    const currentDSL = getCurrentDSL();
+    dslSnapshotRef.current = currentDSL;
+
+    const assistantIdx = { current: -1 };
+
     try {
-      const currentDSL = getCurrentDSL();
-      const resp = await Api.post("ai/chat", { message: msg, currentDSL });
-      const data = resp.data?.data;
-      setMessages((prev) => [...prev, {
-        role: "assistant",
-        content: data?.explanation || "Here are the changes.",
-        dsl: data?.dsl || null,
-      }]);
+      const baseURL = `${_.trimEnd(SERVER_HOST, "/")}/api/ai/chat/stream`;
+      const resp = await fetch(baseURL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ message: msg, currentDSL }),
+      });
+
+      if (!resp.ok || !resp.body) {
+        throw new Error("Stream request failed");
+      }
+
+      setMessages((prev) => {
+        assistantIdx.current = prev.length;
+        return [...prev, { role: "assistant" as const, content: "", dsl: null }];
+      });
+
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue;
+          const raw = line.slice(6);
+          let event: any;
+          try { event = JSON.parse(raw); } catch { continue; }
+
+          if (event.type === "delta") {
+            const idx = assistantIdx.current;
+            setMessages((prev) =>
+              prev.map((m, i) => (i === idx ? { ...m, content: m.content + event.data } : m))
+            );
+          } else if (event.type === "done") {
+            const idx = assistantIdx.current;
+            const explanation = event.explanation || "";
+            const dsl = event.dsl || null;
+            setMessages((prev) =>
+              prev.map((m, i) =>
+                i === idx ? { ...m, content: explanation || m.content || "Done.", dsl, applied: !!dsl } : m
+              )
+            );
+            if (dsl) {
+              applyDSL(dsl);
+            }
+          } else if (event.type === "error") {
+            const idx = assistantIdx.current;
+            setMessages((prev) =>
+              prev.map((m, i) =>
+                i === idx ? { ...m, content: `Error: ${event.data}` } : m
+              )
+            );
+          }
+        }
+      }
     } catch (e: any) {
-      setMessages((prev) => [...prev, {
-        role: "assistant",
-        content: `Error: ${e?.response?.data?.message || e?.message || "AI request failed"}`,
-      }]);
+      if (assistantIdx.current >= 0) {
+        const idx = assistantIdx.current;
+        setMessages((prev) =>
+          prev.map((m, i) =>
+            i === idx && !m.content
+              ? { ...m, content: `Error: ${e?.message || "AI request failed"}` }
+              : m
+          )
+        );
+      } else {
+        setMessages((prev) => [...prev, {
+          role: "assistant" as const,
+          content: `Error: ${e?.message || "AI request failed"}`,
+        }]);
+      }
     } finally {
       setLoading(false);
     }
   };
 
-  const handleApply = (idx: number) => {
+  const handleUndo = (idx: number) => {
+    if (dslSnapshotRef.current) {
+      applyDSL(dslSnapshotRef.current);
+      setMessages((prev) => prev.map((m, i) => (i === idx ? { ...m, applied: false } : m)));
+      message.info("Changes reverted");
+    }
+  };
+
+  const handleReapply = (idx: number) => {
     const msg = messages[idx];
     if (msg?.dsl) {
       applyDSL(msg.dsl);
@@ -474,15 +570,20 @@ export default function AiChatPanel({ visible, onClose }: AiChatPanelProps) {
         {messages.map((msg, idx) => (
           <MessageBubble key={idx} isUser={msg.role === "user"}>
             <BubbleContent isUser={msg.role === "user"}>
-              {msg.content}
+              {msg.content || (loading && idx === messages.length - 1 ? "" : "...")}
             </BubbleContent>
-            {msg.role === "assistant" && msg.dsl && !msg.applied && (
-              <ApplyButton type="primary" size="small" onClick={() => handleApply(idx)}>
-                Apply to Canvas
-              </ApplyButton>
+            {msg.role === "assistant" && msg.dsl && msg.applied && (
+              <AppliedBadge>
+                <CheckCircleOutlined /> Applied to canvas
+                <UndoBtn onClick={() => handleUndo(idx)} title="Undo changes">
+                  <UndoOutlined /> undo
+                </UndoBtn>
+              </AppliedBadge>
             )}
-            {msg.applied && (
-              <span style={{ fontSize: 11, color: "#52c41a", marginTop: 4 }}>Applied</span>
+            {msg.role === "assistant" && msg.dsl && !msg.applied && (
+              <UndoBtn onClick={() => handleReapply(idx)} style={{ marginTop: 4, color: "#315efb" }}>
+                Re-apply to canvas
+              </UndoBtn>
             )}
           </MessageBubble>
         ))}

@@ -1,6 +1,7 @@
 package apis
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
@@ -37,6 +38,7 @@ func BindAiApi(app *pocketbase.PocketBase, dao *daos.Dao, ob *openblocksApi, e *
 	e.GET("/api/ai/config", api.getConfig)
 	e.PUT("/api/ai/config", api.setConfig)
 	e.POST("/api/ai/chat", api.chat)
+	e.POST("/api/ai/chat/stream", api.chatStream)
 	e.POST("/api/ai/auth/save-tokens", api.saveTokens)
 	e.POST("/api/ai/auth/codex-import", api.importCodexAuth)
 }
@@ -517,6 +519,244 @@ func (api *aiApi) chat(c echo.Context) error {
 		return api.chatViaResponses(c, userMessage, auth.AccountID)
 	}
 	return api.chatViaCompletions(c, userMessage)
+}
+
+// chatStream is the SSE streaming endpoint. It sends real-time events to the
+// client as the AI model generates a response so the UI can show incremental
+// text and auto-apply the DSL when complete.
+func (api *aiApi) chatStream(c echo.Context) error {
+	if !api.ob.isLoggedIn(c) {
+		return errResp(c, 401, "Unauthorized")
+	}
+
+	var body struct {
+		Message    string      `json:"message"`
+		CurrentDSL interface{} `json:"currentDSL"`
+	}
+	if err := c.Bind(&body); err != nil {
+		return errResp(c, 400, "Invalid request")
+	}
+	if body.Message == "" {
+		return errResp(c, 400, "Message is required")
+	}
+
+	currentDSLJSON := "{}"
+	if body.CurrentDSL != nil {
+		b, _ := json.Marshal(body.CurrentDSL)
+		currentDSLJSON = string(b)
+	}
+
+	userMessage := body.Message
+	if currentDSLJSON != "{}" {
+		userMessage = fmt.Sprintf("Current page DSL:\n```json\n%s\n```\n\nUser request: %s", currentDSLJSON, body.Message)
+	}
+
+	auth := api.getStoredAuth()
+	if auth.AuthMethod == "codex_chatgpt" {
+		return api.chatStreamViaResponses(c, userMessage, auth.AccountID)
+	}
+	return api.chatStreamViaCompletions(c, userMessage)
+}
+
+func (api *aiApi) chatStreamViaCompletions(c echo.Context, userMessage string) error {
+	openaiReq := map[string]interface{}{
+		"model": "gpt-4o",
+		"messages": []map[string]interface{}{
+			{"role": "system", "content": systemPrompt},
+			{"role": "user", "content": userMessage},
+		},
+		"temperature":     0.7,
+		"max_tokens":      16000,
+		"response_format": map[string]interface{}{"type": "json_object"},
+		"stream":          true,
+	}
+
+	reqBody, _ := json.Marshal(openaiReq)
+
+	resp, err := api.handleAuthFailureAndRetry(func(token string) (*http.Response, error) {
+		req, err := http.NewRequest("POST", "https://api.openai.com/v1/chat/completions", bytes.NewReader(reqBody))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+token)
+		return (&http.Client{}).Do(req)
+	})
+	if err != nil {
+		return writeSSEError(c, "AI request failed: "+err.Error())
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		if strings.Contains(string(body), "model.request") {
+			return writeSSEError(c, "Your OpenAI API key lacks the 'model.request' scope. Create a new key with full permissions at https://platform.openai.com/api-keys, or use 'Sign in with ChatGPT' instead.")
+		}
+		return writeSSEError(c, "AI service error: "+string(body))
+	}
+
+	w := c.Response()
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.WriteHeader(200)
+
+	var fullContent strings.Builder
+	scanner := newLineScanner(resp.Body)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		data := strings.TrimPrefix(line, "data: ")
+		if data == "[DONE]" {
+			break
+		}
+		var chunk struct {
+			Choices []struct {
+				Delta struct {
+					Content string `json:"content"`
+				} `json:"delta"`
+			} `json:"choices"`
+		}
+		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+			continue
+		}
+		if len(chunk.Choices) > 0 && chunk.Choices[0].Delta.Content != "" {
+			fullContent.WriteString(chunk.Choices[0].Delta.Content)
+			writeSSEEvent(w, "delta", chunk.Choices[0].Delta.Content)
+		}
+	}
+
+	return finishStreamWithParsedContent(c, fullContent.String())
+}
+
+func (api *aiApi) chatStreamViaResponses(c echo.Context, userMessage string, accountID string) error {
+	openaiReq := map[string]interface{}{
+		"model":        "gpt-5-codex-mini",
+		"instructions": systemPrompt,
+		"input": []map[string]interface{}{
+			{"role": "user", "content": userMessage + "\n\nRespond in JSON format."},
+		},
+		"text": map[string]interface{}{
+			"format": map[string]interface{}{
+				"type": "json_object",
+			},
+		},
+		"stream": true,
+		"store":  false,
+	}
+
+	reqBody, _ := json.Marshal(openaiReq)
+
+	resp, err := api.handleAuthFailureAndRetry(func(token string) (*http.Response, error) {
+		req, err := http.NewRequest("POST", "https://chatgpt.com/backend-api/codex/responses", bytes.NewReader(reqBody))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "text/event-stream")
+		req.Header.Set("Authorization", "Bearer "+token)
+		if accountID != "" {
+			req.Header.Set("ChatGPT-Account-ID", accountID)
+		}
+		return (&http.Client{}).Do(req)
+	})
+	if err != nil {
+		return writeSSEError(c, "AI request failed: "+err.Error())
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		respStr := string(body)
+		if strings.Contains(respStr, "insufficient permissions") {
+			return writeSSEError(c, "Your ChatGPT sign-in token doesn't have API access. Please use an API key instead.")
+		}
+		return writeSSEError(c, "AI service error: "+respStr)
+	}
+
+	w := c.Response()
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.WriteHeader(200)
+
+	var fullContent strings.Builder
+	scanner := newLineScanner(resp.Body)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		data := strings.TrimPrefix(line, "data: ")
+		if data == "[DONE]" {
+			break
+		}
+		var event struct {
+			Type  string `json:"type"`
+			Delta string `json:"delta"`
+		}
+		if err := json.Unmarshal([]byte(data), &event); err != nil {
+			continue
+		}
+		if event.Type == "response.output_text.delta" && event.Delta != "" {
+			fullContent.WriteString(event.Delta)
+			writeSSEEvent(w, "delta", event.Delta)
+		}
+	}
+
+	return finishStreamWithParsedContent(c, fullContent.String())
+}
+
+func writeSSEEvent(w *echo.Response, eventType string, data string) {
+	payload, _ := json.Marshal(map[string]string{"type": eventType, "data": data})
+	fmt.Fprintf(w, "data: %s\n\n", payload)
+	w.Flush()
+}
+
+func writeSSEError(c echo.Context, msg string) error {
+	w := c.Response()
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.WriteHeader(200)
+	payload, _ := json.Marshal(map[string]string{"type": "error", "data": msg})
+	fmt.Fprintf(w, "data: %s\n\n", payload)
+	w.Flush()
+	return nil
+}
+
+func finishStreamWithParsedContent(c echo.Context, content string) error {
+	w := c.Response()
+	if content == "" {
+		payload, _ := json.Marshal(map[string]string{"type": "error", "data": "AI returned no response"})
+		fmt.Fprintf(w, "data: %s\n\n", payload)
+		w.Flush()
+		return nil
+	}
+
+	var aiResult map[string]interface{}
+	if err := json.Unmarshal([]byte(content), &aiResult); err != nil {
+		payload, _ := json.Marshal(map[string]interface{}{"type": "done", "explanation": content, "dsl": nil})
+		fmt.Fprintf(w, "data: %s\n\n", payload)
+		w.Flush()
+		return nil
+	}
+
+	donePayload, _ := json.Marshal(map[string]interface{}{
+		"type":        "done",
+		"explanation": aiResult["explanation"],
+		"dsl":         aiResult["dsl"],
+	})
+	fmt.Fprintf(w, "data: %s\n\n", donePayload)
+	w.Flush()
+	return nil
+}
+
+func newLineScanner(r io.Reader) *bufio.Scanner {
+	s := bufio.NewScanner(r)
+	s.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	return s
 }
 
 func (api *aiApi) chatViaCompletions(c echo.Context, userMessage string) error {
